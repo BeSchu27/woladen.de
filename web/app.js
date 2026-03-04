@@ -157,15 +157,17 @@ async function init() {
 /* --- DATA LOADING --- */
 async function loadData() {
   try {
-    const [geoRes, opRes] = await Promise.all([
+    const [geoRes, opRes, summaryRes] = await Promise.all([
       fetch("./data/chargers_fast.geojson"),
       fetch("./data/operators.json"),
+      fetch("./data/summary.json"),
     ]);
 
-    if (!geoRes.ok || !opRes.ok) throw new Error("Network response was not ok");
+    if (!geoRes.ok || !opRes.ok || !summaryRes.ok) throw new Error("Network response was not ok");
 
     const geoData = await geoRes.json();
     const opData = await opRes.json();
+    const summaryData = await summaryRes.json();
 
     state.features = geoData.features || [];
 
@@ -173,7 +175,7 @@ async function loadData() {
     // Real sorting happens when we have location
 
     populateOperators(opData);
-    setAppMeta(geoData);
+    setAppMeta(geoData, summaryData);
     renderAmenityFilters(); // Render dynamic amenity filters
 
     applyFilters(); // Initial render
@@ -186,9 +188,17 @@ async function loadData() {
   }
 }
 
-function setAppMeta(geoData) {
-  if (els.meta && geoData.generated_at) {
-    const date = new Date(geoData.generated_at).toLocaleDateString("de-DE", {
+function setAppMeta(geoData, summaryData) {
+  if (!els.meta) return;
+
+  const generatedAt =
+    summaryData?.run?.finished_at ||
+    geoData?.generated_at ||
+    null;
+
+  if (generatedAt) {
+    const parsed = new Date(generatedAt);
+    const date = Number.isNaN(parsed.getTime()) ? generatedAt : parsed.toLocaleString("de-DE", {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
