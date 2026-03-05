@@ -23,7 +23,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private func makeRootTemplate() -> CPTemplate {
         let intro = CPListItem(
             text: "Woladen CarPlay",
-            detailText: "Scaffold aktiv. Fuer produktiven Betrieb ist CarPlay-Entitlement + Apple-Kategorie-Freigabe erforderlich."
+            detailText: "Scaffold aktiv. Für produktiven Betrieb ist CarPlay-Entitlement + Apple-Kategorie-Freigabe erforderlich."
         )
 
         let introSection = CPListSection(items: [intro], header: "Status", sectionIndexTitle: nil)

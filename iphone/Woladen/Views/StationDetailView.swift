@@ -93,7 +93,7 @@ struct StationDetailView: View {
             HStack {
                 Label("\(Int(feature.properties.displayedMaxPowerKW.rounded())) kW max / \(feature.properties.chargingPointsCount) Ladepunkte", systemImage: "bolt.fill")
                 Spacer()
-                Label("\(feature.properties.amenitiesTotal) Amenities", systemImage: "storefront")
+                Label("\(feature.properties.amenitiesTotal) Annehmlichkeiten", systemImage: "storefront")
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -109,11 +109,11 @@ struct StationDetailView: View {
 
     private var amenitySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("In der Nahe")
+            Text("In der Nähe")
                 .font(.headline)
 
             if feature.properties.amenityExamples.isEmpty {
-                Text("Keine Details verfugbar.")
+                Text("Keine Details verfügbar.")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(feature.properties.amenityExamples) { item in

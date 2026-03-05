@@ -9,11 +9,11 @@ struct AmenityMeta {
 enum AmenityCatalog {
     static let all: [AmenityMeta] = [
         .init(key: "amenity_restaurant", label: "Restaurant", symbol: "fork.knife"),
-        .init(key: "amenity_cafe", label: "Cafe", symbol: "cup.and.saucer"),
+        .init(key: "amenity_cafe", label: "Café", symbol: "cup.and.saucer"),
         .init(key: "amenity_fast_food", label: "Fast Food", symbol: "takeoutbag.and.cup.and.straw"),
         .init(key: "amenity_toilets", label: "Toiletten", symbol: "figure.stand"),
         .init(key: "amenity_supermarket", label: "Supermarkt", symbol: "cart"),
-        .init(key: "amenity_bakery", label: "Backerei", symbol: "birthday.cake"),
+        .init(key: "amenity_bakery", label: "Bäckerei", symbol: "birthday.cake"),
         .init(key: "amenity_convenience", label: "Kiosk", symbol: "building.2"),
         .init(key: "amenity_pharmacy", label: "Apotheke", symbol: "cross.case"),
         .init(key: "amenity_hotel", label: "Hotel", symbol: "bed.double"),

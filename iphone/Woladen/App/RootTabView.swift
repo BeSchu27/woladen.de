@@ -46,6 +46,8 @@ struct RootTabView: View {
             MapTabView(showingFilter: $showingFilter)
         case .favorites:
             FavoritesTabView()
+        case .info:
+            InfoTabView()
         }
     }
 
@@ -57,6 +59,7 @@ struct RootTabView: View {
                 tabButton(.list, title: "Liste", systemImage: "list.bullet")
                 tabButton(.map, title: "Karte", systemImage: "map")
                 tabButton(.favorites, title: "Favoriten", systemImage: "star")
+                tabButton(.info, title: "Info", systemImage: "info.circle")
             }
             .padding(.top, 6)
             .padding(.bottom, max(6, safeBottom))

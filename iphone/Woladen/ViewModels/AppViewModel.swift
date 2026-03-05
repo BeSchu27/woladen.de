@@ -7,6 +7,7 @@ final class AppViewModel: ObservableObject {
         case list
         case map
         case favorites
+        case info
     }
 
     @Published private(set) var allFeatures: [GeoJSONFeature] = []
@@ -136,7 +137,7 @@ final class AppViewModel: ObservableObject {
         if activeBundleInfo.source == "installed" {
             return "Installiertes Datenbundle (\(activeBundleInfo.manifest.version))"
         }
-        return "In App gebundeltes Baseline-Datenbundle"
+        return "In der App gebündeltes Baseline-Datenbundle"
     }
 
     private func distance(from userLocation: CLLocation, to coordinate: CLLocationCoordinate2D) -> CLLocationDistance {

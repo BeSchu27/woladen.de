@@ -11,10 +11,54 @@ struct InfoTabView: View {
 
     var body: some View {
         List {
-            Section("Woladen") {
-                Text("Offline-first iPhone App fur Schnellladepunkte mit Aufenthaltsqualitat.")
-                Text("Alle Basisdaten sind in der App enthalten und funktionieren ohne Internet.")
-                    .foregroundStyle(.secondary)
+            Section("Über woladen.de") {
+                Text("Finde Schnellladesäulen mit der besten Aufenthaltsqualität. Wir zeigen dir, wo es sich lohnt zu laden. Ohne Ladeweile.")
+                if let info = viewModel.activeBundleInfo {
+                    Text("Datenstand: \(formattedTimestamp(info.manifest.generatedAt))")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Legende") {
+                legendRow(color: Color.yellow, text: ">10 Annehmlichkeiten (Gold)")
+                legendRow(color: Color.gray, text: ">5 Annehmlichkeiten (Silber)")
+                legendRow(color: Color.brown, text: ">1 Annehmlichkeiten (Bronze)")
+                legendRow(color: Color.secondary, text: "Keine Annehmlichkeiten")
+            }
+
+            Section("Kontakt & Code") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Entwickelt von Prof. Dr. Raphael Volz")
+                    Text("Hochschule Pforzheim")
+                    Link(
+                        "raphael.volz@hs-pforzheim.de",
+                        destination: URL(string: "mailto:raphael.volz@hs-pforzheim.de")!
+                    )
+                    Link(
+                        "GitHub Projekt",
+                        destination: URL(string: "https://github.com/volzinnovation/woladen.de")!
+                    )
+                }
+            }
+
+            Section("Datenquellen & Lizenzen") {
+                Link(
+                    "BNetzA: Ladesäulenregister (Downloads und Formulare)",
+                    destination: URL(string: "https://www.bundesnetzagentur.de/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/start.html")!
+                )
+                Link(
+                    "OpenStreetMap",
+                    destination: URL(string: "https://www.openstreetmap.org/")!
+                )
+                Text("Kartendaten und POI-Daten © OpenStreetMap-Mitwirkende, verfügbar unter ODbL v1.0.")
+                Link(
+                    "OpenStreetMap: Copyright und Lizenzhinweise",
+                    destination: URL(string: "https://www.openstreetmap.org/copyright")!
+                )
+                Link(
+                    "ODbL v1.0: Vollständiger Lizenztext",
+                    destination: URL(string: "https://opendatacommons.org/licenses/odbl/1.0/")!
+                )
             }
 
             Section("Standort") {
@@ -28,7 +72,7 @@ struct InfoTabView: View {
                 Text(viewModel.humanReadableBundleSource())
                 if let info = viewModel.activeBundleInfo {
                     Text("Version: \(info.manifest.version)")
-                    Text("Generated: \(info.manifest.generatedAt)")
+                    Text("Erstellt am: \(formattedTimestamp(info.manifest.generatedAt))")
                 }
 
                 Button("Datenbundle importieren") {
@@ -47,8 +91,8 @@ struct InfoTabView: View {
                 }
             }
 
-            Section("Hinweis fur getrennte Updates") {
-                Text("Code und Daten sind getrennt: Die App enthalt ein Baseline-Datenbundle. Optional kann ein neues Datenbundle als Ordner importiert werden (muss chargers_fast.geojson, operators.json und optional data_manifest.json enthalten).")
+            Section("Hinweis für getrennte Updates") {
+                Text("Code und Daten sind getrennt: Die App enthält ein Baseline-Datenbundle. Optional kann ein neues Datenbundle als Ordner importiert werden (muss chargers_fast.geojson, operators.json und optional data_manifest.json enthalten).")
                     .foregroundStyle(.secondary)
             }
 
@@ -66,7 +110,6 @@ struct InfoTabView: View {
                 }
             }
         }
-        .navigationTitle("Info")
         .fileImporter(
             isPresented: $showingImporter,
             allowedContentTypes: [.folder],
@@ -80,6 +123,42 @@ struct InfoTabView: View {
                 importError = error.localizedDescription
             }
         }
+    }
+
+    private func legendRow(color: Color, text: String) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(color)
+                .frame(width: 12, height: 12)
+            Text(text)
+        }
+    }
+
+    private func formattedTimestamp(_ raw: String) -> String {
+        if let date = iso8601WithFractional.date(from: raw) ?? iso8601.date(from: raw) {
+            return deFormatter.string(from: date)
+        }
+        return raw
+    }
+
+    private var iso8601: ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }
+
+    private var iso8601WithFractional: ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }
+
+    private var deFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
     }
 
     private var locationStatusText: String {

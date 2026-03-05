@@ -19,6 +19,8 @@ Fast chargers in Germany with nearby amenities from OpenStreetMap.
 - `scripts/build_data.py`: End-to-end data pipeline.
 - `scripts/build_site.py`: Creates deployable `site/` bundle.
 - `web/`: Frontend app (Leaflet + vanilla JS/CSS/HTML).
+- `iphone/`: Native iPhone app (SwiftUI + MapKit).
+- `android/`: Native Android app (Jetpack Compose + OSMDroid).
 - `data/`: Cached source and generated analytics outputs.
 - `.github/workflows/daily-data-generation.yml`: Daily data generation + commit.
 - `.github/workflows/pages-deploy.yml`: GitHub Pages build + deploy.
