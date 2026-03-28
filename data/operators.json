@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-03-28T13:34:44.157120+00:00",
+  "generated_at": "2026-03-28T15:05:01.779383+00:00",
   "min_stations": 100,
   "total_operators": 23,
   "operators": [
     {
       "name": "EnBW mobility+ AG und Co.KG",
-      "stations": 1961
+      "stations": 1958
     },
     {
       "name": "EWE Go GmbH",
-      "stations": 886
+      "stations": 885
     },
     {
       "name": "Shell Deutschland GmbH",
@@ -17,7 +17,7 @@
     },
     {
       "name": "Pfalzwerke AG",
-      "stations": 832
+      "stations": 833
     },
     {
       "name": "Allego GmbH",
@@ -29,11 +29,11 @@
     },
     {
       "name": "Lidl Dienstleistung GmbH & Co. KG",
-      "stations": 635
+      "stations": 615
     },
     {
       "name": "Kaufland Dienstleistung GmbH & Co. KG",
-      "stations": 437
+      "stations": 435
     },
     {
       "name": "ALDI SÜD Immobilienverwaltungs-GmbH & Co. oHG",
@@ -52,12 +52,12 @@
       "stations": 301
     },
     {
-      "name": "Citywatt GmbH",
-      "stations": 242
+      "name": "Mer Germany GmbH",
+      "stations": 249
     },
     {
-      "name": "Mer Germany GmbH",
-      "stations": 241
+      "name": "Citywatt GmbH",
+      "stations": 243
     },
     {
       "name": "IONITY GmbH",
@@ -85,7 +85,7 @@
     },
     {
       "name": "TotalEnergies Charging Solutions Deutschland GmbH",
-      "stations": 119
+      "stations": 118
     },
     {
       "name": "Autostrom plus GmbH",

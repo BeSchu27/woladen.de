@@ -689,7 +689,7 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
         )
 
     def station_id(row: pd.Series) -> str:
-        raw = f"{row['lat']:.5f}|{row['lon']:.5f}|{row['operator']}|{row['address']}"
+        raw = f"{row['lat']:.7f}|{row['lon']:.7f}|{row['operator']}|{row['address']}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
     df["station_id"] = df.apply(station_id, axis=1)

@@ -1,7 +1,7 @@
 {
   "run": {
-    "started_at": "2026-03-28T11:54:40+00:00",
-    "finished_at": "2026-03-28T13:34:44+00:00"
+    "started_at": "2026-03-28T15:05:01+00:00",
+    "finished_at": "2026-03-28T15:05:01+00:00"
   },
   "source": {
     "source_url": "https://data.bundesnetzagentur.de/Bundesnetzagentur/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenregister_BNetzA_2026-03-25.csv",
@@ -10,7 +10,7 @@
     "content_type": "application/octet-stream"
   },
   "params": {
-    "min_power_kw": 50.0,
+    "min_power_kw": 50,
     "radius_m": 250,
     "amenity_backend": "osm-pbf",
     "query_budget": 500,
@@ -20,8 +20,8 @@
   },
   "records": {
     "raw_rows": 108577,
-    "fast_chargers_total": 17055,
-    "stations_with_amenities": 15529
+    "fast_chargers_total": 16347,
+    "stations_with_amenities": 14939
   },
   "amenity_lookup": {
     "backend": "osm-pbf",
@@ -40,7 +40,11 @@
     "osm_pbf_ways_seen": 69803700,
     "osm_pbf_relations_seen": 885028,
     "osm_pbf_nodes_kept": 207832,
-    "osm_pbf_ways_kept": 129873
+    "osm_pbf_ways_kept": 129873,
+    "incremental_overpass_queries": 40,
+    "incremental_cache_hits": 0,
+    "incremental_cache_misses": 40,
+    "incremental_lookup_errors": 17
   },
   "operators": {
     "min_stations": 100,
