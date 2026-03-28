@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 
 private const val PRIVACY_POLICY_URL = "https://woladen.de/privacy.html"
 private const val IMPRINT_URL = "https://woladen.de/imprint.html"
+private const val WEBSITE_URL = "https://woladen.de/"
 private const val STUDIOS_URL = "https://studios.moonshots.gmbh/"
 
 @Composable
@@ -113,8 +114,9 @@ fun InfoTabView(
                 Text("Hochschule Pforzheim")
                 LinkButton("raphael.volz@hs-pforzheim.de", "mailto:raphael.volz@hs-pforzheim.de")
                 LinkButton("GitHub Projekt", "https://github.com/volzinnovation/woladen.de")
-                Text("Vertrieben von: Moonshots Studios GmbH")
-                LinkButton("Moonshots Studios GmbH", STUDIOS_URL)
+                Text("Die Moonshots Studios GmbH betreibt und vertreibt woladen.de und die begleitenden Apps für iPhone und Android.")
+                LinkButton("woladen.de", WEBSITE_URL)
+                LinkButton("studios.moonshots.gmbh", STUDIOS_URL)
                 LinkButton("Impressum", IMPRINT_URL)
             }
 

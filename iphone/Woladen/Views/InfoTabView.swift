@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct InfoTabView: View {
+    private let websiteURL = URL(string: "https://woladen.de/")!
     private let privacyPolicyURL = URL(string: "https://woladen.de/privacy.html")!
     private let imprintURL = URL(string: "https://woladen.de/imprint.html")!
     private let studiosURL = URL(string: "https://studios.moonshots.gmbh/")!
@@ -38,8 +39,9 @@ struct InfoTabView: View {
                         "GitHub Projekt",
                         destination: URL(string: "https://github.com/volzinnovation/woladen.de")!
                     )
-                    Text("Vertrieben von: Moonshots Studios GmbH")
-                    Link("Moonshots Studios GmbH", destination: studiosURL)
+                    Text("Die Moonshots Studios GmbH betreibt und vertreibt woladen.de und die begleitenden Apps für iPhone und Android.")
+                    Link("woladen.de", destination: websiteURL)
+                    Link("studios.moonshots.gmbh", destination: studiosURL)
                     Link("Impressum", destination: imprintURL)
                 }
             }
