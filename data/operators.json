@@ -1,23 +1,23 @@
 {
-  "generated_at": "2026-03-04T21:58:48.224984+00:00",
+  "generated_at": "2026-03-28T13:34:44.157120+00:00",
   "min_stations": 100,
   "total_operators": 23,
   "operators": [
     {
       "name": "EnBW mobility+ AG und Co.KG",
-      "stations": 1955
+      "stations": 1961
     },
     {
       "name": "EWE Go GmbH",
-      "stations": 887
+      "stations": 886
     },
     {
       "name": "Shell Deutschland GmbH",
-      "stations": 831
+      "stations": 847
     },
     {
       "name": "Pfalzwerke AG",
-      "stations": 820
+      "stations": 832
     },
     {
       "name": "Allego GmbH",
@@ -29,7 +29,7 @@
     },
     {
       "name": "Lidl Dienstleistung GmbH & Co. KG",
-      "stations": 624
+      "stations": 635
     },
     {
       "name": "Kaufland Dienstleistung GmbH & Co. KG",
@@ -37,31 +37,31 @@
     },
     {
       "name": "ALDI SÜD Immobilienverwaltungs-GmbH & Co. oHG",
-      "stations": 391
+      "stations": 393
     },
     {
       "name": "Vattenfall Smarter Living GmbH",
-      "stations": 361
+      "stations": 393
     },
     {
       "name": "E.ON Drive Infrastructure GmbH",
-      "stations": 304
+      "stations": 308
     },
     {
       "name": "Tesla Germany GmbH",
       "stations": 301
     },
     {
-      "name": "Mer Germany GmbH",
-      "stations": 244
-    },
-    {
       "name": "Citywatt GmbH",
       "stations": 242
     },
     {
+      "name": "Mer Germany GmbH",
+      "stations": 241
+    },
+    {
       "name": "IONITY GmbH",
-      "stations": 224
+      "stations": 225
     },
     {
       "name": "TEAG Mobil GmbH",
@@ -73,19 +73,19 @@
     },
     {
       "name": "Comfortcharge GmbH",
-      "stations": 199
+      "stations": 198
     },
     {
       "name": "E.ON Drive GmbH",
       "stations": 164
     },
     {
-      "name": "TotalEnergies Charging Solutions Deutschland GmbH",
-      "stations": 118
+      "name": "ALDI Nord Deutschland Stiftung & Co. KG",
+      "stations": 133
     },
     {
-      "name": "ALDI Nord Deutschland Stiftung & Co. KG",
-      "stations": 116
+      "name": "TotalEnergies Charging Solutions Deutschland GmbH",
+      "stations": 119
     },
     {
       "name": "Autostrom plus GmbH",
