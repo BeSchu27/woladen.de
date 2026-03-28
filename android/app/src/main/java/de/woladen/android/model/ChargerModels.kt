@@ -1,5 +1,7 @@
 package de.woladen.android.model
 
+private const val MAX_REASONABLE_DISPLAY_POWER_KW = 400.0
+
 data class GeoJsonFeatureCollection(
     val generatedAt: String?,
     val features: List<GeoJsonFeature>
@@ -38,7 +40,13 @@ data class ChargerProperties(
     val amenityCounts: Map<String, Int>
 ) {
     val displayedMaxPowerKw: Double
-        get() = maxOf(maxIndividualPowerKw, maxPowerKw)
+        get() {
+            val maxIndividual = sanitizeDisplayedPowerKw(maxIndividualPowerKw)
+            if (maxIndividual > 0.0) {
+                return maxIndividual
+            }
+            return sanitizeDisplayedPowerKw(maxPowerKw)
+        }
 
     fun topAmenities(limit: Int = 3): List<AmenityCount> {
         return amenityCounts
@@ -62,3 +70,10 @@ data class AmenityCount(
     val key: String,
     val count: Int
 )
+
+private fun sanitizeDisplayedPowerKw(value: Double): Double {
+    if (!value.isFinite() || value <= 0.0) {
+        return 0.0
+    }
+    return minOf(value, MAX_REASONABLE_DISPLAY_POWER_KW)
+}

@@ -3,6 +3,7 @@
  */
 
 /* --- CONFIGURATION & CONSTANTS --- */
+const MAX_DISPLAY_POWER_KW = 400;
 const AMENITY_MAPPING = {
   amenity_restaurant: { label: "Restaurant", icon: "amenity_restaurant.png" },
   amenity_cafe: { label: "Café", icon: "amenity_cafe.png" },
@@ -114,6 +115,7 @@ const els = {
     favBtn: document.getElementById("btn-toggle-fav"),
     googleBtn: document.getElementById("btn-nav-google"),
     appleBtn: document.getElementById("btn-nav-apple"),
+    stationLink: document.getElementById("btn-station-link"),
     mapContainer: document.getElementById("detail-map"),
   },
   buttons: {
@@ -130,6 +132,7 @@ async function init() {
   initMap();
   initNavigation();
   initFilters();
+  window.addEventListener("popstate", syncDetailModalWithUrl);
 
   // Event Listeners
   els.buttons.locate.addEventListener("click", () => requestUserLocation(false));
@@ -179,6 +182,7 @@ async function loadData() {
     renderAmenityFilters(); // Render dynamic amenity filters
 
     applyFilters(); // Initial render
+    syncDetailModalWithUrl();
   } catch (err) {
     console.error("Failed to load data", err);
     els.lists.chargers.innerHTML = `<div class="empty-state">Fehler beim Laden der Daten.<br>${err.message}</div>`;
@@ -430,7 +434,7 @@ function applyFilters() {
       return false;
 
     // Power
-    if ((p.max_power_kw || 0) < state.filters.minPower) return false;
+    if (getDisplayedMaxPowerKw(p) < state.filters.minPower) return false;
 
     // Amenities
     if (state.filters.amenities.size > 0) {
@@ -550,12 +554,11 @@ function createStationCard(feature) {
 }
 
 function getDisplayedMaxPowerKw(props) {
-  const maxIndividual = Number(props.max_individual_power_kw || 0);
-  if (Number.isFinite(maxIndividual) && maxIndividual > 0) {
+  const maxIndividual = sanitizeDisplayedPowerKw(props.max_individual_power_kw);
+  if (maxIndividual > 0) {
     return maxIndividual;
   }
-  const fallback = Number(props.max_power_kw || 0);
-  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+  return sanitizeDisplayedPowerKw(props.max_power_kw);
 }
 
 function getChargingPointCount(props) {
@@ -569,7 +572,8 @@ function getChargingPointCount(props) {
 /* --- DETAIL MODAL --- */
 let currentDetailFeature = null;
 
-function openDetail(feature) {
+function openDetail(feature, options = {}) {
+  const syncUrl = options.syncUrl !== false;
   currentDetailFeature = feature;
   const p = feature.properties;
 
@@ -585,6 +589,9 @@ function openDetail(feature) {
   const [lon, lat] = feature.geometry.coordinates;
   els.detail.googleBtn.href = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
   els.detail.appleBtn.href = `http://maps.apple.com/?daddr=${lat},${lon}`;
+  if (els.detail.stationLink) {
+    els.detail.stationLink.href = getStationPagePath(p);
+  }
 
   // Mini Map
   // Clear old markers from detail map? Not strictly needed if we just pan,
@@ -639,6 +646,10 @@ function openDetail(feature) {
   ensureViewportWhenReady();
   setTimeout(() => ensureViewportWhenReady(), 200);
   setTimeout(() => ensureViewportWhenReady(), 500);
+
+  if (syncUrl) {
+    updateRequestedStationId(p.station_id || "");
+  }
 }
 
 function renderDetailAmenityMarkers(examples) {
@@ -770,6 +781,67 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+function sanitizeDisplayedPowerKw(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 0;
+  }
+  return Math.min(numeric, MAX_DISPLAY_POWER_KW);
+}
+
+function getStationPagePath(props) {
+  const stationId = String(props?.station_id || "").trim();
+  if (!stationId) {
+    return "./";
+  }
+  return `./station/${encodeURIComponent(stationId)}.html`;
+}
+
+function getRequestedStationId() {
+  const params = new URLSearchParams(window.location.search);
+  return (params.get("station") || "").trim();
+}
+
+function updateRequestedStationId(stationId) {
+  const url = new URL(window.location.href);
+  if (stationId) {
+    url.searchParams.set("station", stationId);
+  } else {
+    url.searchParams.delete("station");
+  }
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", next);
+}
+
+function findFeatureByStationId(stationId) {
+  return state.features.find((feature) => feature.properties.station_id === stationId) || null;
+}
+
+function syncDetailModalWithUrl() {
+  const stationId = getRequestedStationId();
+  if (!stationId) {
+    if (!els.modals.detail.classList.contains("hidden")) {
+      closeModal("detail", { syncUrl: false });
+    }
+    return;
+  }
+  if (!state.features.length) {
+    return;
+  }
+
+  const feature = findFeatureByStationId(stationId);
+  if (!feature) {
+    console.warn("Unknown station requested", stationId);
+    return;
+  }
+
+  if (currentDetailFeature?.properties?.station_id === stationId) {
+    return;
+  }
+
+  openDetail(feature, { syncUrl: false });
+}
+
 function getDistance(feature) {
   if (!state.userPos) return Infinity;
   const [lon, lat] = feature.geometry.coordinates;
@@ -854,9 +926,16 @@ function openModal(name) {
   if (m) m.classList.remove("hidden");
 }
 
-function closeModal(name) {
+function closeModal(name, options = {}) {
+  const syncUrl = options.syncUrl !== false;
   const m = els.modals[name];
   if (m) m.classList.add("hidden");
+  if (name === "detail") {
+    currentDetailFeature = null;
+    if (syncUrl) {
+      updateRequestedStationId("");
+    }
+  }
 }
 
 /* --- BOOTSTRAP --- */

@@ -66,6 +66,8 @@ AMENITY_SCHEMA_VERSION = 1
 CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 BNETZA_POWER_COLUMN_INDEX = 6  # 7th column in source file
 EARTH_RADIUS_M = 6_371_000.0
+MAX_REASONABLE_DISPLAY_POWER_KW = 400.0
+NUMERIC_TOKEN_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
 
 AMENITY_BACKEND_OVERPASS = "overpass"
 AMENITY_BACKEND_OSM_PBF = "osm-pbf"
@@ -246,6 +248,47 @@ def to_float(series: pd.Series) -> pd.Series:
         .replace("", pd.NA)
     )
     return pd.to_numeric(clean, errors="coerce")
+
+
+def parse_numeric_tokens(value: Any) -> list[float]:
+    if value is None or pd.isna(value):
+        return []
+
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return [float(value)]
+
+    text = str(value).strip()
+    if not text:
+        return []
+
+    tokens: list[float] = []
+    for token in NUMERIC_TOKEN_RE.findall(text):
+        normalized = token.replace(",", ".")
+        try:
+            tokens.append(float(normalized))
+        except ValueError:
+            continue
+    return tokens
+
+
+def max_numeric_token(value: Any, *, clamp_max: float | None = None) -> float:
+    tokens = [token for token in parse_numeric_tokens(value) if token > 0]
+    if not tokens:
+        return math.nan
+    if clamp_max is not None:
+        tokens = [min(token, clamp_max) for token in tokens]
+    return max(tokens)
+
+
+def to_max_numeric_token_float(
+    series: pd.Series,
+    *,
+    clamp_max: float | None = None,
+) -> pd.Series:
+    return pd.to_numeric(
+        series.apply(lambda value: max_numeric_token(value, clamp_max=clamp_max)),
+        errors="coerce",
+    )
 
 
 def detect_csv_encoding(csv_path: Path) -> str:
@@ -487,8 +530,11 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
             f"(found {len(df.columns)} columns)"
         )
     power_col = df.columns[BNETZA_POWER_COLUMN_INDEX]
-    # to_float() explicitly normalizes comma decimals (e.g. \"150,0\" -> 150.0).
-    df["max_power_kw"] = to_float(df[power_col])
+    raw_max_power_kw = to_max_numeric_token_float(df[power_col])
+    capped_max_power_kw = to_max_numeric_token_float(
+        df[power_col],
+        clamp_max=MAX_REASONABLE_DISPLAY_POWER_KW,
+    )
 
     charging_points_col = find_column(
         df,
@@ -506,15 +552,31 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
     ]
     if connector_power_cols:
         connector_power_frame = pd.DataFrame(
-            {col: to_float(df[col]) for col in connector_power_cols},
+            {
+                col: to_max_numeric_token_float(
+                    df[col],
+                    clamp_max=MAX_REASONABLE_DISPLAY_POWER_KW,
+                )
+                for col in connector_power_cols
+            },
             index=df.index,
         )
         connector_max = connector_power_frame.max(axis=1, skipna=True)
     else:
         connector_max = pd.Series([pd.NA] * len(df), index=df.index, dtype="float64")
 
-    per_point_fallback = df["max_power_kw"] / df["charging_points_count_row"].replace(0, pd.NA)
-    df["max_individual_power_kw_row"] = connector_max.fillna(per_point_fallback)
+    per_point_fallback = raw_max_power_kw / df["charging_points_count_row"].replace(0, pd.NA)
+    capped_per_point_fallback = per_point_fallback.clip(
+        upper=MAX_REASONABLE_DISPLAY_POWER_KW
+    )
+    df["max_individual_power_kw_row"] = (
+        connector_max
+        .fillna(capped_per_point_fallback)
+        .fillna(capped_max_power_kw)
+    )
+    # User-facing "max kW" should represent plausible stall power, not
+    # summed cabinet/site power from source rows.
+    df["max_power_kw"] = df["max_individual_power_kw_row"]
 
     df["lat"] = to_float(df[lat_col])
     df["lon"] = to_float(df[lon_col])
@@ -610,6 +672,21 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
         .fillna(df["max_power_kw"])
         .fillna(0.0)
     )
+
+    impossible_display_power = (
+        (df["max_power_kw"] > MAX_REASONABLE_DISPLAY_POWER_KW)
+        | (df["max_individual_power_kw"] > MAX_REASONABLE_DISPLAY_POWER_KW)
+    )
+    if impossible_display_power.any():
+        sample = df.loc[
+            impossible_display_power,
+            ["operator", "postcode", "city", "address", "max_power_kw", "max_individual_power_kw"],
+        ].head(10)
+        raise RuntimeError(
+            "Detected impossible output power values above "
+            f"{MAX_REASONABLE_DISPLAY_POWER_KW:.0f} kW after normalization. "
+            f"Sample rows:\n{sample.to_string(index=False)}"
+        )
 
     def station_id(row: pd.Series) -> str:
         raw = f"{row['lat']:.5f}|{row['lon']:.5f}|{row['operator']}|{row['address']}"

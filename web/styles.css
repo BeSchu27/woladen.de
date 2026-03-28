@@ -573,7 +573,7 @@ input[type="range"] {
 
 .detail-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 1rem;
   margin-bottom: 2rem;
 }
@@ -692,6 +692,100 @@ input[type="range"] {
   text-decoration: none;
   border-radius: 6px;
   font-size: 0.9rem;
+}
+
+.station-page {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 28rem),
+    linear-gradient(180deg, #f8fafc 0%, #eef6f5 100%);
+}
+
+.station-shell {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 18px 56px;
+}
+
+.station-hero {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 24px;
+  box-shadow: var(--shadow-lg);
+  padding: 28px 22px;
+  margin-bottom: 20px;
+}
+
+.station-summary {
+  margin: 0 0 18px;
+  color: var(--color-text-muted);
+  line-height: 1.7;
+}
+
+.station-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.station-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(15, 118, 110, 0.08);
+  color: var(--color-primary-dark);
+  font-weight: 600;
+}
+
+.station-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.station-actions .link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+}
+
+.station-actions .link-btn.secondary-link {
+  background: white;
+  color: var(--color-text-main);
+  border: 1px solid var(--color-border);
+}
+
+.station-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.station-list li {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid var(--color-border);
+}
+
+.station-list strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--color-text-main);
+}
+
+.station-note {
+  margin-top: 16px;
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+  line-height: 1.6;
 }
 
 .legal-page {
@@ -826,5 +920,23 @@ input[type="range"] {
 
   .legal-card {
     padding: 40px 44px;
+  }
+
+  .station-shell {
+    padding: 40px 24px 72px;
+  }
+
+  .station-hero {
+    padding: 40px 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .station-actions {
+    flex-direction: column;
+  }
+
+  .station-actions .link-btn {
+    width: 100%;
   }
 }

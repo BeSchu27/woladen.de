@@ -1,6 +1,8 @@
 import Foundation
 import CoreLocation
 
+private let maxReasonableDisplayPowerKW = 400.0
+
 struct GeoJSONFeatureCollection: Decodable {
     let generatedAt: String?
     let features: [GeoJSONFeature]
@@ -136,7 +138,11 @@ struct AmenityExample: Decodable, Identifiable {
 
 extension ChargerProperties {
     var displayedMaxPowerKW: Double {
-        max(maxIndividualPowerKW, maxPowerKW)
+        let maxIndividual = sanitizedDisplayPower(maxIndividualPowerKW)
+        if maxIndividual > 0 {
+            return maxIndividual
+        }
+        return sanitizedDisplayPower(maxPowerKW)
     }
 
     func topAmenities(limit: Int = 3) -> [AmenityCount] {
@@ -150,6 +156,11 @@ extension ChargerProperties {
             .prefix(limit)
             .map { $0 }
     }
+}
+
+private func sanitizedDisplayPower(_ value: Double) -> Double {
+    guard value.isFinite, value > 0 else { return 0 }
+    return min(value, maxReasonableDisplayPowerKW)
 }
 
 struct AmenityCount: Identifiable {
