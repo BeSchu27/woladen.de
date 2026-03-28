@@ -10,6 +10,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.io.Reader
 import java.time.Instant
 
 class DataBundleManager(private val context: Context) {
@@ -38,6 +39,16 @@ class DataBundleManager(private val context: Context) {
             }
         }
         context.assets.open(fileName).bufferedReader().use { it.readText() }
+    }
+
+    suspend fun <T> useBundleReader(fileName: String, block: (Reader) -> T): T = withContext(Dispatchers.IO) {
+        if (hasValidInstalledBundle()) {
+            val file = File(installedBundleDir(), fileName)
+            if (file.exists()) {
+                return@withContext file.bufferedReader().use(block)
+            }
+        }
+        context.assets.open(fileName).bufferedReader().use(block)
     }
 
     suspend fun installBundleFromTreeUri(treeUri: Uri): Unit = withContext(Dispatchers.IO) {

@@ -1,5 +1,7 @@
 package de.woladen.android.repository
 
+import android.util.JsonReader
+import android.util.JsonToken
 import de.woladen.android.model.AmenityExample
 import de.woladen.android.model.ChargerProperties
 import de.woladen.android.model.GeoJsonFeature
@@ -7,8 +9,7 @@ import de.woladen.android.model.GeoJsonFeatureCollection
 import de.woladen.android.model.GeoJsonPointGeometry
 import de.woladen.android.model.OperatorCatalog
 import de.woladen.android.model.OperatorEntry
-import org.json.JSONArray
-import org.json.JSONObject
+import java.io.Reader
 
 class ChargerRepository(private val dataBundleManager: DataBundleManager) {
     data class LoadResult(
@@ -17,11 +18,14 @@ class ChargerRepository(private val dataBundleManager: DataBundleManager) {
     )
 
     suspend fun loadData(): LoadResult {
-        val chargersRaw = dataBundleManager.readBundleFile("chargers_fast.geojson")
-        val operatorsRaw = dataBundleManager.readBundleFile("operators.json")
-
-        val featureCollection = parseFeatureCollection(chargersRaw)
-        val operatorCatalog = parseOperatorCatalog(operatorsRaw)
+        val featureCollection = dataBundleManager.useBundleReader(
+            "chargers_fast.geojson",
+            ::parseFeatureCollection
+        )
+        val operatorCatalog = dataBundleManager.useBundleReader(
+            "operators.json",
+            ::parseOperatorCatalog
+        )
 
         val sortedOperators = operatorCatalog.operators.sortedWith(
             compareByDescending<OperatorEntry> { it.stations }.thenBy { it.name }
@@ -33,132 +37,253 @@ class ChargerRepository(private val dataBundleManager: DataBundleManager) {
         )
     }
 
-    private fun parseFeatureCollection(raw: String): GeoJsonFeatureCollection {
-        val root = JSONObject(raw)
-        val generatedAt = root.optString("generated_at", null)
-        val featuresArray = root.optJSONArray("features") ?: JSONArray()
-        val features = ArrayList<GeoJsonFeature>(featuresArray.length())
+    private fun parseFeatureCollection(reader: Reader): GeoJsonFeatureCollection {
+        JsonReader(reader).use { jsonReader ->
+            var generatedAt: String? = null
+            val features = mutableListOf<GeoJsonFeature>()
 
-        for (i in 0 until featuresArray.length()) {
-            val featureObject = featuresArray.optJSONObject(i) ?: continue
-            val geometryObject = featureObject.optJSONObject("geometry") ?: continue
-            val propertiesObject = featureObject.optJSONObject("properties") ?: continue
+            jsonReader.beginObject()
+            while (jsonReader.hasNext()) {
+                when (jsonReader.nextName()) {
+                    "generated_at" -> generatedAt = nextStringOrNull(jsonReader)
+                    "features" -> parseFeaturesArray(jsonReader, features)
+                    else -> jsonReader.skipValue()
+                }
+            }
+            jsonReader.endObject()
 
-            val geometry = GeoJsonPointGeometry(
-                type = geometryObject.optString("type", "Point"),
-                coordinates = parseCoordinates(geometryObject.optJSONArray("coordinates"))
-            )
-
-            val properties = parseProperties(propertiesObject)
-            features += GeoJsonFeature(
-                id = properties.stationId,
-                geometry = geometry,
-                properties = properties
+            return GeoJsonFeatureCollection(
+                generatedAt = generatedAt,
+                features = features
             )
         }
+    }
 
-        return GeoJsonFeatureCollection(
-            generatedAt = generatedAt,
-            features = features
+    private fun parseFeaturesArray(reader: JsonReader, target: MutableList<GeoJsonFeature>) {
+        reader.beginArray()
+        while (reader.hasNext()) {
+            parseFeature(reader)?.let(target::add)
+        }
+        reader.endArray()
+    }
+
+    private fun parseFeature(reader: JsonReader): GeoJsonFeature? {
+        var geometry: GeoJsonPointGeometry? = null
+        var properties: ChargerProperties? = null
+
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "geometry" -> geometry = parseGeometry(reader)
+                "properties" -> properties = parseProperties(reader)
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+
+        val finalGeometry = geometry ?: return null
+        val finalProperties = properties ?: return null
+        return GeoJsonFeature(
+            id = finalProperties.stationId,
+            geometry = finalGeometry,
+            properties = finalProperties
         )
     }
 
-    private fun parseCoordinates(array: JSONArray?): List<Double> {
-        if (array == null || array.length() < 2) {
-            return listOf(0.0, 0.0)
+    private fun parseGeometry(reader: JsonReader): GeoJsonPointGeometry {
+        var type = "Point"
+        var lon = 0.0
+        var lat = 0.0
+
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "type" -> type = nextStringOrNull(reader) ?: "Point"
+                "coordinates" -> {
+                    reader.beginArray()
+                    if (reader.hasNext()) lon = nextLossyDouble(reader, 0.0)
+                    if (reader.hasNext()) lat = nextLossyDouble(reader, 0.0)
+                    while (reader.hasNext()) {
+                        reader.skipValue()
+                    }
+                    reader.endArray()
+                }
+                else -> reader.skipValue()
+            }
         }
-        val lon = parseLossyDouble(array.opt(0), 0.0)
-        val lat = parseLossyDouble(array.opt(1), 0.0)
-        return listOf(lon, lat)
+        reader.endObject()
+
+        return GeoJsonPointGeometry(
+            type = type,
+            coordinates = listOf(lon, lat)
+        )
     }
 
-    private fun parseProperties(json: JSONObject): ChargerProperties {
-        val amenityExamplesArray = json.optJSONArray("amenity_examples") ?: JSONArray()
-        val amenityExamples = ArrayList<AmenityExample>(amenityExamplesArray.length())
-        for (j in 0 until amenityExamplesArray.length()) {
-            val item = amenityExamplesArray.optJSONObject(j) ?: continue
-            amenityExamples += AmenityExample(
-                category = item.optString("category", ""),
-                name = item.optString("name").ifBlank { null },
-                openingHours = item.optString("opening_hours").ifBlank { null },
-                distanceM = parseLossyDoubleOrNull(item.opt("distance_m")),
-                lat = parseLossyDoubleOrNull(item.opt("lat")),
-                lon = parseLossyDoubleOrNull(item.opt("lon"))
-            )
-        }
+    private fun parseProperties(reader: JsonReader): ChargerProperties {
+        var stationId = ""
+        var operatorName = ""
+        var status = ""
+        var maxPowerKw = 0.0
+        var chargingPointsCount = 1
+        var maxIndividualPowerKw: Double? = null
+        var postcode = ""
+        var city = ""
+        var address = ""
+        var amenitiesTotal = 0
+        var amenitiesSource = ""
+        val amenityExamples = mutableListOf<AmenityExample>()
+        val amenityCounts = linkedMapOf<String, Int>()
 
-        val amenityCounts = HashMap<String, Int>()
-        val keys = json.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            if (!key.startsWith("amenity_")) continue
-            val value = parseLossyInt(json.opt(key), 0)
-            amenityCounts[key] = value
+        reader.beginObject()
+        while (reader.hasNext()) {
+            val name = reader.nextName()
+            when {
+                name == "station_id" -> stationId = nextStringOrNull(reader).orEmpty()
+                name == "operator" -> operatorName = nextStringOrNull(reader).orEmpty()
+                name == "status" -> status = nextStringOrNull(reader).orEmpty()
+                name == "max_power_kw" -> maxPowerKw = nextLossyDouble(reader, 0.0)
+                name == "charging_points_count" -> chargingPointsCount = nextLossyInt(reader, 1)
+                name == "max_individual_power_kw" -> {
+                    maxIndividualPowerKw = nextLossyDoubleOrNull(reader)
+                }
+                name == "postcode" -> postcode = nextStringOrNull(reader).orEmpty()
+                name == "city" -> city = nextStringOrNull(reader).orEmpty()
+                name == "address" -> address = nextStringOrNull(reader).orEmpty()
+                name == "amenities_total" -> amenitiesTotal = nextLossyInt(reader, 0)
+                name == "amenities_source" -> amenitiesSource = nextStringOrNull(reader).orEmpty()
+                name == "amenity_examples" -> parseAmenityExamples(reader, amenityExamples)
+                name.startsWith("amenity_") -> amenityCounts[name] = nextLossyInt(reader, 0)
+                else -> reader.skipValue()
+            }
         }
-
-        val maxPowerKw = parseLossyDouble(json.opt("max_power_kw"), 0.0)
+        reader.endObject()
 
         return ChargerProperties(
-            stationId = json.optString("station_id", ""),
-            operatorName = json.optString("operator", ""),
-            status = json.optString("status", ""),
+            stationId = stationId,
+            operatorName = operatorName,
+            status = status,
             maxPowerKw = maxPowerKw,
-            chargingPointsCount = parseLossyInt(json.opt("charging_points_count"), 1),
-            maxIndividualPowerKw = parseLossyDouble(json.opt("max_individual_power_kw"), maxPowerKw),
-            postcode = json.optString("postcode", ""),
-            city = json.optString("city", ""),
-            address = json.optString("address", ""),
-            amenitiesTotal = parseLossyInt(json.opt("amenities_total"), 0),
-            amenitiesSource = json.optString("amenities_source", ""),
+            chargingPointsCount = chargingPointsCount,
+            maxIndividualPowerKw = maxIndividualPowerKw ?: maxPowerKw,
+            postcode = postcode,
+            city = city,
+            address = address,
+            amenitiesTotal = amenitiesTotal,
+            amenitiesSource = amenitiesSource,
             amenityExamples = amenityExamples,
             amenityCounts = amenityCounts
         )
     }
 
-    private fun parseOperatorCatalog(raw: String): OperatorCatalog {
-        val root = JSONObject(raw)
-        val operatorsArray = root.optJSONArray("operators") ?: JSONArray()
-        val operators = ArrayList<OperatorEntry>(operatorsArray.length())
+    private fun parseAmenityExamples(reader: JsonReader, target: MutableList<AmenityExample>) {
+        reader.beginArray()
+        while (reader.hasNext()) {
+            var category = ""
+            var name: String? = null
+            var openingHours: String? = null
+            var distanceM: Double? = null
+            var lat: Double? = null
+            var lon: Double? = null
 
-        for (i in 0 until operatorsArray.length()) {
-            val obj = operatorsArray.optJSONObject(i) ?: continue
-            operators += OperatorEntry(
-                name = obj.optString("name", ""),
-                stations = parseLossyInt(obj.opt("stations"), 0)
+            reader.beginObject()
+            while (reader.hasNext()) {
+                when (reader.nextName()) {
+                    "category" -> category = nextStringOrNull(reader).orEmpty()
+                    "name" -> name = nextStringOrNull(reader)?.ifBlank { null }
+                    "opening_hours" -> openingHours = nextStringOrNull(reader)?.ifBlank { null }
+                    "distance_m" -> distanceM = nextLossyDoubleOrNull(reader)
+                    "lat" -> lat = nextLossyDoubleOrNull(reader)
+                    "lon" -> lon = nextLossyDoubleOrNull(reader)
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+
+            target += AmenityExample(
+                category = category,
+                name = name,
+                openingHours = openingHours,
+                distanceM = distanceM,
+                lat = lat,
+                lon = lon
             )
         }
-
-        return OperatorCatalog(
-            generatedAt = root.optString("generated_at", null),
-            minStations = parseLossyInt(root.opt("min_stations"), 0),
-            totalOperators = parseLossyInt(root.opt("total_operators"), operators.size),
-            operators = operators
-        )
+        reader.endArray()
     }
 
-    private fun parseLossyInt(any: Any?, fallback: Int): Int {
-        return when (any) {
-            is Number -> any.toInt()
-            is String -> any.replace(',', '.').toDoubleOrNull()?.toInt() ?: fallback
-            else -> fallback
+    private fun parseOperatorCatalog(reader: Reader): OperatorCatalog {
+        JsonReader(reader).use { jsonReader ->
+            var generatedAt: String? = null
+            var minStations = 0
+            var totalOperators = 0
+            val operators = mutableListOf<OperatorEntry>()
+
+            jsonReader.beginObject()
+            while (jsonReader.hasNext()) {
+                when (jsonReader.nextName()) {
+                    "generated_at" -> generatedAt = nextStringOrNull(jsonReader)
+                    "min_stations" -> minStations = nextLossyInt(jsonReader, 0)
+                    "total_operators" -> totalOperators = nextLossyInt(jsonReader, 0)
+                    "operators" -> parseOperatorsArray(jsonReader, operators)
+                    else -> jsonReader.skipValue()
+                }
+            }
+            jsonReader.endObject()
+
+            return OperatorCatalog(
+                generatedAt = generatedAt,
+                minStations = minStations,
+                totalOperators = if (totalOperators > 0) totalOperators else operators.size,
+                operators = operators
+            )
         }
     }
 
-    private fun parseLossyDouble(any: Any?, fallback: Double): Double {
-        return when (any) {
-            is Number -> any.toDouble()
-            is String -> any.replace(',', '.').toDoubleOrNull() ?: fallback
-            else -> fallback
+    private fun parseOperatorsArray(reader: JsonReader, target: MutableList<OperatorEntry>) {
+        reader.beginArray()
+        while (reader.hasNext()) {
+            var name = ""
+            var stations = 0
+
+            reader.beginObject()
+            while (reader.hasNext()) {
+                when (reader.nextName()) {
+                    "name" -> name = nextStringOrNull(reader).orEmpty()
+                    "stations" -> stations = nextLossyInt(reader, 0)
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+
+            target += OperatorEntry(name = name, stations = stations)
+        }
+        reader.endArray()
+    }
+
+    private fun nextStringOrNull(reader: JsonReader): String? {
+        return when (reader.peek()) {
+            JsonToken.NULL -> {
+                reader.nextNull()
+                null
+            }
+            JsonToken.STRING, JsonToken.NUMBER -> reader.nextString()
+            JsonToken.BOOLEAN -> reader.nextBoolean().toString()
+            else -> {
+                reader.skipValue()
+                null
+            }
         }
     }
 
-    private fun parseLossyDoubleOrNull(any: Any?): Double? {
-        return when (any) {
-            null -> null
-            JSONObject.NULL -> null
-            is Number -> any.toDouble()
-            is String -> any.replace(',', '.').toDoubleOrNull()
-            else -> null
-        }
+    private fun nextLossyInt(reader: JsonReader, fallback: Int): Int {
+        return nextStringOrNull(reader)?.replace(',', '.')?.toDoubleOrNull()?.toInt() ?: fallback
+    }
+
+    private fun nextLossyDouble(reader: JsonReader, fallback: Double): Double {
+        return nextStringOrNull(reader)?.replace(',', '.')?.toDoubleOrNull() ?: fallback
+    }
+
+    private fun nextLossyDoubleOrNull(reader: JsonReader): Double? {
+        return nextStringOrNull(reader)?.replace(',', '.')?.toDoubleOrNull()
     }
 }
