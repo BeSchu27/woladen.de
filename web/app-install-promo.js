@@ -22,11 +22,11 @@
       <div class="app-install-head">
         <div class="app-install-copy">
           <p class="app-install-kicker">Auch als App</p>
-          <h2>wo-laden immer dabei</h2>
+          <h2>Wo laden? Immer dabei</h2>
           <p>
             Kostenfrei für
             <a class="app-install-copy-link" href="${IOS_LINK}">iPhone im App Store</a>
-            und für
+            und
             <a
               class="app-install-copy-link"
               href="${isAndroid() ? ANDROID_STORE_LINK : ANDROID_WEB_LINK}"
