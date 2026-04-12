@@ -193,6 +193,9 @@ async function loadData() {
 
     applyFilters(); // Initial render
     syncDetailModalWithUrl();
+
+    // Trigger the browser location prompt so list and map can sort around the user again.
+    requestUserLocation(true);
   } catch (err) {
     console.error("Failed to load data", err);
     els.lists.chargers.innerHTML = `<div class="empty-state">Fehler beim Laden der Daten.<br>${err.message}</div>`;
