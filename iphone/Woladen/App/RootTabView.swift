@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct RootTabView: View {
     @EnvironmentObject private var viewModel: AppViewModel
@@ -8,16 +7,12 @@ struct RootTabView: View {
     @State private var showingFilter = false
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color(.systemBackground)
-                .ignoresSafeArea()
-
-            currentTab
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(.systemBackground))
-
-            tabBar(safeBottom: safeBottomInset)
-        }
+        currentTab
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                tabBar
+            }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .sheet(isPresented: $showingFilter) {
             FilterSheetView(
@@ -51,37 +46,31 @@ struct RootTabView: View {
         }
     }
 
-    private func tabBar(safeBottom: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            Divider()
-
-            HStack(spacing: 0) {
+    private var tabBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
                 tabButton(.list, title: "Liste", systemImage: "list.bullet")
                 tabButton(.map, title: "Karte", systemImage: "map")
                 tabButton(.favorites, title: "Favoriten", systemImage: "star")
                 tabButton(.info, title: "Info", systemImage: "info.circle")
             }
-            .padding(.top, 6)
-            .padding(.bottom, max(6, safeBottom))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+
+            Capsule()
+                .fill(Color.secondary.opacity(0.35))
+                .frame(width: 120, height: 5)
         }
+        .frame(maxWidth: 380)
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
-        .background(Color(.systemBackground))
-        .ignoresSafeArea(.container, edges: .bottom)
-    }
-
-    private var safeBottomInset: CGFloat {
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-
-        let bottom = windows.map { $0.safeAreaInsets.bottom }.max() ?? 0
-        if bottom > 0 { return bottom }
-
-        // Fallback for cases where window insets are not available yet.
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            return 34
-        }
-        return 0
     }
 
     private func tabButton(_ tab: AppViewModel.AppTab, title: String, systemImage: String) -> some View {
@@ -91,18 +80,16 @@ struct RootTabView: View {
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 21, weight: .medium))
+                    .font(.system(size: 17, weight: .semibold))
                 Text(title)
-                    .font(.caption)
+                    .font(.system(size: 11, weight: .semibold))
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, minHeight: 54)
             .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
-                    .padding(.horizontal, 10)
-            )
+            }
         }
         .buttonStyle(.plain)
     }

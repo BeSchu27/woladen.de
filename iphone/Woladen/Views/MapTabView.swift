@@ -43,7 +43,7 @@ struct MapTabView: View {
                     }
                 }
             }
-            .ignoresSafeArea()
+            .ignoresSafeArea(edges: [.top, .horizontal])
             .onMapCameraChange(frequency: .onEnd) { context in
                 let center = context.region.center
                 guard shouldQuery(for: center) else { return }
