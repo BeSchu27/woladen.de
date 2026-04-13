@@ -453,6 +453,12 @@ body {
   border: 1px solid var(--color-border);
 }
 
+.badge-live {
+  background: rgba(15, 118, 110, 0.12);
+  color: #0f766e;
+  border-color: rgba(15, 118, 110, 0.2);
+}
+
 /* MODAL OVERLAY */
 .modal-overlay {
   position: fixed;
@@ -745,6 +751,7 @@ input[type="search"]::placeholder {
 
 .detail-stats {
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
   margin-bottom: 1.5rem;
 }
@@ -757,6 +764,13 @@ input[type="search"]::placeholder {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.detail-subnote {
+  margin-top: -0.75rem;
+  margin-bottom: 1.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
 }
 
 .detail-actions {

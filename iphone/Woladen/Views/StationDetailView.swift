@@ -102,6 +102,17 @@ struct StationDetailView: View {
             .font(.footnote)
             .foregroundStyle(.secondary)
 
+            if let occupancy = feature.properties.occupancySummaryLabel {
+                Label(occupancy, systemImage: "dot.radiowaves.left.and.right")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let source = feature.properties.occupancySourceLabel {
+                    Text(source)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             HStack(spacing: 10) {
                 Button("Google Navi") { openNavigationLink(google: true) }
                     .buttonStyle(.borderedProminent)

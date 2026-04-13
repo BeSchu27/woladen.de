@@ -34,6 +34,16 @@ data class ChargerProperties(
     val postcode: String,
     val city: String,
     val address: String,
+    val occupancySourceUid: String,
+    val occupancySourceName: String,
+    val occupancyStatus: String,
+    val occupancyLastUpdated: String,
+    val occupancyTotalEvses: Int,
+    val occupancyAvailableEvses: Int,
+    val occupancyOccupiedEvses: Int,
+    val occupancyChargingEvses: Int,
+    val occupancyOutOfOrderEvses: Int,
+    val occupancyUnknownEvses: Int,
     val amenitiesTotal: Int,
     val amenitiesSource: String,
     val amenityExamples: List<AmenityExample>,
@@ -55,6 +65,34 @@ data class ChargerProperties(
             .sortedWith(compareByDescending<AmenityCount> { it.count }.thenBy { it.key })
             .take(limit)
     }
+
+    val occupancySummaryLabel: String?
+        get() {
+            if (occupancyTotalEvses <= 0) {
+                return null
+            }
+            if (occupancyAvailableEvses > 0) {
+                return "${occupancyAvailableEvses}/${occupancyTotalEvses} frei"
+            }
+            if (occupancyOccupiedEvses > 0) {
+                return "${occupancyOccupiedEvses}/${occupancyTotalEvses} belegt"
+            }
+            if (occupancyOutOfOrderEvses >= occupancyTotalEvses) {
+                return "Außer Betrieb"
+            }
+            return "Belegung unbekannt"
+        }
+
+    val occupancySourceLabel: String?
+        get() {
+            if (occupancyTotalEvses <= 0) {
+                return null
+            }
+            if (occupancySourceName.isBlank()) {
+                return "Live via MobiData BW"
+            }
+            return "Live via MobiData BW ($occupancySourceName)"
+        }
 }
 
 data class AmenityExample(

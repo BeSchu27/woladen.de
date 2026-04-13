@@ -57,6 +57,16 @@ struct ChargerProperties: Decodable {
     let postcode: String
     let city: String
     let address: String
+    let occupancySourceUID: String
+    let occupancySourceName: String
+    let occupancyStatus: String
+    let occupancyLastUpdated: String
+    let occupancyTotalEVSEs: Int
+    let occupancyAvailableEVSEs: Int
+    let occupancyOccupiedEVSEs: Int
+    let occupancyChargingEVSEs: Int
+    let occupancyOutOfOrderEVSEs: Int
+    let occupancyUnknownEVSEs: Int
     let amenitiesTotal: Int
     let amenitiesSource: String
     let amenityExamples: [AmenityExample]
@@ -72,6 +82,16 @@ struct ChargerProperties: Decodable {
         case postcode
         case city
         case address
+        case occupancySourceUID = "occupancy_source_uid"
+        case occupancySourceName = "occupancy_source_name"
+        case occupancyStatus = "occupancy_status"
+        case occupancyLastUpdated = "occupancy_last_updated"
+        case occupancyTotalEVSEs = "occupancy_total_evses"
+        case occupancyAvailableEVSEs = "occupancy_available_evses"
+        case occupancyOccupiedEVSEs = "occupancy_occupied_evses"
+        case occupancyChargingEVSEs = "occupancy_charging_evses"
+        case occupancyOutOfOrderEVSEs = "occupancy_out_of_order_evses"
+        case occupancyUnknownEVSEs = "occupancy_unknown_evses"
         case amenitiesTotal = "amenities_total"
         case amenitiesSource = "amenities_source"
         case amenityExamples = "amenity_examples"
@@ -87,6 +107,16 @@ struct ChargerProperties: Decodable {
         postcode: String,
         city: String,
         address: String,
+        occupancySourceUID: String,
+        occupancySourceName: String,
+        occupancyStatus: String,
+        occupancyLastUpdated: String,
+        occupancyTotalEVSEs: Int,
+        occupancyAvailableEVSEs: Int,
+        occupancyOccupiedEVSEs: Int,
+        occupancyChargingEVSEs: Int,
+        occupancyOutOfOrderEVSEs: Int,
+        occupancyUnknownEVSEs: Int,
         amenitiesTotal: Int,
         amenitiesSource: String,
         amenityExamples: [AmenityExample],
@@ -101,6 +131,16 @@ struct ChargerProperties: Decodable {
         self.postcode = postcode
         self.city = city
         self.address = address
+        self.occupancySourceUID = occupancySourceUID
+        self.occupancySourceName = occupancySourceName
+        self.occupancyStatus = occupancyStatus
+        self.occupancyLastUpdated = occupancyLastUpdated
+        self.occupancyTotalEVSEs = occupancyTotalEVSEs
+        self.occupancyAvailableEVSEs = occupancyAvailableEVSEs
+        self.occupancyOccupiedEVSEs = occupancyOccupiedEVSEs
+        self.occupancyChargingEVSEs = occupancyChargingEVSEs
+        self.occupancyOutOfOrderEVSEs = occupancyOutOfOrderEVSEs
+        self.occupancyUnknownEVSEs = occupancyUnknownEVSEs
         self.amenitiesTotal = amenitiesTotal
         self.amenitiesSource = amenitiesSource
         self.amenityExamples = amenityExamples
@@ -119,6 +159,16 @@ struct ChargerProperties: Decodable {
         postcode = (try? container.decode(String.self, forKey: .postcode)) ?? ""
         city = (try? container.decode(String.self, forKey: .city)) ?? ""
         address = (try? container.decode(String.self, forKey: .address)) ?? ""
+        occupancySourceUID = (try? container.decode(String.self, forKey: .occupancySourceUID)) ?? ""
+        occupancySourceName = (try? container.decode(String.self, forKey: .occupancySourceName)) ?? ""
+        occupancyStatus = (try? container.decode(String.self, forKey: .occupancyStatus)) ?? ""
+        occupancyLastUpdated = (try? container.decode(String.self, forKey: .occupancyLastUpdated)) ?? ""
+        occupancyTotalEVSEs = Int(container.decodeLossyDouble(forKey: .occupancyTotalEVSEs) ?? 0)
+        occupancyAvailableEVSEs = Int(container.decodeLossyDouble(forKey: .occupancyAvailableEVSEs) ?? 0)
+        occupancyOccupiedEVSEs = Int(container.decodeLossyDouble(forKey: .occupancyOccupiedEVSEs) ?? 0)
+        occupancyChargingEVSEs = Int(container.decodeLossyDouble(forKey: .occupancyChargingEVSEs) ?? 0)
+        occupancyOutOfOrderEVSEs = Int(container.decodeLossyDouble(forKey: .occupancyOutOfOrderEVSEs) ?? 0)
+        occupancyUnknownEVSEs = Int(container.decodeLossyDouble(forKey: .occupancyUnknownEVSEs) ?? 0)
         amenitiesTotal = Int(container.decodeLossyDouble(forKey: .amenitiesTotal) ?? 0)
         amenitiesSource = (try? container.decode(String.self, forKey: .amenitiesSource)) ?? ""
         amenityExamples = (try? container.decode([AmenityExample].self, forKey: .amenityExamples)) ?? []
@@ -185,6 +235,28 @@ extension ChargerProperties {
             }
             .prefix(limit)
             .map { $0 }
+    }
+
+    var occupancySummaryLabel: String? {
+        guard occupancyTotalEVSEs > 0 else { return nil }
+        if occupancyAvailableEVSEs > 0 {
+            return "\(occupancyAvailableEVSEs)/\(occupancyTotalEVSEs) frei"
+        }
+        if occupancyOccupiedEVSEs > 0 {
+            return "\(occupancyOccupiedEVSEs)/\(occupancyTotalEVSEs) belegt"
+        }
+        if occupancyOutOfOrderEVSEs >= occupancyTotalEVSEs {
+            return "Außer Betrieb"
+        }
+        return "Belegung unbekannt"
+    }
+
+    var occupancySourceLabel: String? {
+        guard occupancyTotalEVSEs > 0 else { return nil }
+        if occupancySourceName.isEmpty {
+            return "Live via MobiData BW"
+        }
+        return "Live via MobiData BW (\(occupancySourceName))"
     }
 }
 

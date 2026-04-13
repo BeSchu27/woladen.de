@@ -64,6 +64,39 @@ function formatAmenityCount(count) {
   return `${rounded} ${rounded === 1 ? "Angebot vor Ort" : "Angebote vor Ort"}`;
 }
 
+function formatOccupancySummary(props) {
+  const total = Number(props.occupancy_total_evses || 0);
+  const available = Number(props.occupancy_available_evses || 0);
+  const occupied = Number(props.occupancy_occupied_evses || 0);
+  const outOfOrder = Number(props.occupancy_out_of_order_evses || 0);
+
+  if (!Number.isFinite(total) || total <= 0) {
+    return "";
+  }
+  if (available > 0) {
+    return `${Math.round(available)}/${Math.round(total)} frei`;
+  }
+  if (occupied > 0) {
+    return `${Math.round(occupied)}/${Math.round(total)} belegt`;
+  }
+  if (outOfOrder >= total) {
+    return "Außer Betrieb";
+  }
+  return "Belegung unbekannt";
+}
+
+function formatOccupancySource(props) {
+  const total = Number(props.occupancy_total_evses || 0);
+  if (!Number.isFinite(total) || total <= 0) {
+    return "";
+  }
+  const sourceName = String(props.occupancy_source_name || "").trim();
+  if (sourceName) {
+    return `Live via MobiData BW (${sourceName})`;
+  }
+  return "Live via MobiData BW";
+}
+
 /* --- STATE --- */
 const state = {
   features: [], // All charger features
@@ -120,6 +153,9 @@ const els = {
     title: document.getElementById("detail-title"),
     address: document.getElementById("detail-address"),
     power: document.getElementById("detail-power"),
+    occupancy: document.getElementById("detail-occupancy"),
+    occupancyPill: document.getElementById("detail-occupancy-pill"),
+    occupancySource: document.getElementById("detail-occupancy-source"),
     amenityCount: document.getElementById("detail-amenity-count"),
     amenityList: document.getElementById("detail-amenities-list"),
     favBtn: document.getElementById("btn-toggle-fav"),
@@ -193,6 +229,10 @@ async function loadData() {
 
     applyFilters(); // Initial render
     syncDetailModalWithUrl();
+
+    // Restore the last-known behavior on localhost and production:
+    // request location once after data is ready so map/list can sort around the user.
+    requestUserLocation(true);
   } catch (err) {
     console.error("Failed to load data", err);
     els.lists.chargers.innerHTML = `<div class="empty-state">Fehler beim Laden der Daten.<br>${err.message}</div>`;
@@ -516,6 +556,7 @@ function createStationCard(feature) {
   div.className = "station-card";
 
   const distance = getDistanceFormatted(feature);
+  const occupancySummary = formatOccupancySummary(p);
 
   // Top Amenities (max 3 badges)
   const badges = Object.keys(AMENITY_MAPPING)
@@ -524,6 +565,9 @@ function createStationCard(feature) {
     .slice(0, 3)
     .map((k) => `<span class="badge">${AMENITY_MAPPING[k].label}</span>`)
     .join("");
+  const liveBadge = occupancySummary
+    ? `<span class="badge badge-live">${escapeHtml(occupancySummary)}</span>`
+    : "";
 
   const markerColor = getMarkerColor(p);
   
@@ -540,7 +584,7 @@ function createStationCard(feature) {
       ${Math.round(getDisplayedMaxPowerKw(p))} kW max • ${getChargingPointCount(p)} Ladepunkte • ${formatAmenityCount(p.amenities_total)}
     </div>
     <div class="card-badges">
-      ${badges}
+      ${liveBadge}${badges}
     </div>
   `;
 
@@ -575,6 +619,22 @@ function openDetail(feature, options = {}) {
   els.detail.title.textContent = p.operator || "Unbekannt";
   els.detail.address.textContent = `${p.address || ""}, ${p.postcode || ""} ${p.city || ""}`;
   els.detail.power.textContent = `${Math.round(getDisplayedMaxPowerKw(p))} kW max / ${getChargingPointCount(p)} Ladepunkte`;
+  const occupancySummary = formatOccupancySummary(p);
+  const occupancySource = formatOccupancySource(p);
+  if (occupancySummary) {
+    els.detail.occupancy.textContent = occupancySummary;
+    els.detail.occupancyPill.hidden = false;
+  } else {
+    els.detail.occupancy.textContent = "";
+    els.detail.occupancyPill.hidden = true;
+  }
+  if (occupancySource) {
+    els.detail.occupancySource.textContent = occupancySource;
+    els.detail.occupancySource.hidden = false;
+  } else {
+    els.detail.occupancySource.textContent = "";
+    els.detail.occupancySource.hidden = true;
+  }
   els.detail.amenityCount.textContent = formatAmenityCount(p.amenities_total);
 
   // Favorite Button State

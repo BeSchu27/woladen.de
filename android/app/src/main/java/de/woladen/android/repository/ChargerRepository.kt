@@ -129,6 +129,16 @@ class ChargerRepository(private val dataBundleManager: DataBundleManager) {
         var postcode = ""
         var city = ""
         var address = ""
+        var occupancySourceUid = ""
+        var occupancySourceName = ""
+        var occupancyStatus = ""
+        var occupancyLastUpdated = ""
+        var occupancyTotalEvses = 0
+        var occupancyAvailableEvses = 0
+        var occupancyOccupiedEvses = 0
+        var occupancyChargingEvses = 0
+        var occupancyOutOfOrderEvses = 0
+        var occupancyUnknownEvses = 0
         var amenitiesTotal = 0
         var amenitiesSource = ""
         val amenityExamples = mutableListOf<AmenityExample>()
@@ -149,6 +159,16 @@ class ChargerRepository(private val dataBundleManager: DataBundleManager) {
                 name == "postcode" -> postcode = nextStringOrNull(reader).orEmpty()
                 name == "city" -> city = nextStringOrNull(reader).orEmpty()
                 name == "address" -> address = nextStringOrNull(reader).orEmpty()
+                name == "occupancy_source_uid" -> occupancySourceUid = nextStringOrNull(reader).orEmpty()
+                name == "occupancy_source_name" -> occupancySourceName = nextStringOrNull(reader).orEmpty()
+                name == "occupancy_status" -> occupancyStatus = nextStringOrNull(reader).orEmpty()
+                name == "occupancy_last_updated" -> occupancyLastUpdated = nextStringOrNull(reader).orEmpty()
+                name == "occupancy_total_evses" -> occupancyTotalEvses = nextLossyInt(reader, 0)
+                name == "occupancy_available_evses" -> occupancyAvailableEvses = nextLossyInt(reader, 0)
+                name == "occupancy_occupied_evses" -> occupancyOccupiedEvses = nextLossyInt(reader, 0)
+                name == "occupancy_charging_evses" -> occupancyChargingEvses = nextLossyInt(reader, 0)
+                name == "occupancy_out_of_order_evses" -> occupancyOutOfOrderEvses = nextLossyInt(reader, 0)
+                name == "occupancy_unknown_evses" -> occupancyUnknownEvses = nextLossyInt(reader, 0)
                 name == "amenities_total" -> amenitiesTotal = nextLossyInt(reader, 0)
                 name == "amenities_source" -> amenitiesSource = nextStringOrNull(reader).orEmpty()
                 name == "amenity_examples" -> parseAmenityExamples(reader, amenityExamples)
@@ -168,6 +188,16 @@ class ChargerRepository(private val dataBundleManager: DataBundleManager) {
             postcode = postcode,
             city = city,
             address = address,
+            occupancySourceUid = occupancySourceUid,
+            occupancySourceName = occupancySourceName,
+            occupancyStatus = occupancyStatus,
+            occupancyLastUpdated = occupancyLastUpdated,
+            occupancyTotalEvses = occupancyTotalEvses,
+            occupancyAvailableEvses = occupancyAvailableEvses,
+            occupancyOccupiedEvses = occupancyOccupiedEvses,
+            occupancyChargingEvses = occupancyChargingEvses,
+            occupancyOutOfOrderEvses = occupancyOutOfOrderEvses,
+            occupancyUnknownEvses = occupancyUnknownEvses,
             amenitiesTotal = amenitiesTotal,
             amenitiesSource = amenitiesSource,
             amenityExamples = amenityExamples,

@@ -1,17 +1,17 @@
 {
   "run": {
-    "started_at": "2026-04-01T00:15:28+00:00",
-    "finished_at": "2026-04-01T02:04:06+00:00"
+    "started_at": "2026-04-13T09:42:29+00:00",
+    "finished_at": "2026-04-13T10:30:57+00:00"
   },
   "source": {
     "source_url": "https://data.bundesnetzagentur.de/Bundesnetzagentur/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenregister_BNetzA_2026-03-25.csv",
-    "fetched_at": "2026-04-01T00:16:21.126940+00:00",
+    "fetched_at": "2026-04-13T09:42:34.842509+00:00",
     "bytes": 48836056,
     "content_type": "application/octet-stream"
   },
   "params": {
     "min_power_kw": 50.0,
-    "radius_m": 250,
+    "radius_m": 100,
     "amenity_backend": "osm-pbf",
     "query_budget": 500,
     "refresh_days": 30,
@@ -21,7 +21,83 @@
   "records": {
     "raw_rows": 108577,
     "fast_chargers_total": 16347,
-    "stations_with_amenities": 14956
+    "stations_with_live_occupancy": 280,
+    "stations_with_amenities": 11904
+  },
+  "occupancy_lookup": {
+    "sources_discovered": 8,
+    "sources_used": 8,
+    "locations_scanned": 3337,
+    "matched_locations": 264,
+    "matched_stations": 280,
+    "matched_evses": 1389,
+    "errors": [],
+    "sources": [
+      {
+        "uid": "chargecloud_ludwigsburg",
+        "name": "Stadtwerke Ludwigsburg",
+        "locations_scanned": 130,
+        "matched_locations": 1,
+        "matched_stations": 1,
+        "matched_evses": 3
+      },
+      {
+        "uid": "chargecloud_pforzheim",
+        "name": "Stadtwerke Pforzheim",
+        "locations_scanned": 93,
+        "matched_locations": 7,
+        "matched_stations": 7,
+        "matched_evses": 14
+      },
+      {
+        "uid": "chargecloud_stuttgart",
+        "name": "Stadtwerke Stuttgart",
+        "locations_scanned": 270,
+        "matched_locations": 3,
+        "matched_stations": 3,
+        "matched_evses": 16
+      },
+      {
+        "uid": "chargecloud_tuebingen",
+        "name": "Stadtwerke Tübingen",
+        "locations_scanned": 88,
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0
+      },
+      {
+        "uid": "datex2_enbw",
+        "name": "EnBW Datex II",
+        "locations_scanned": 2494,
+        "matched_locations": 225,
+        "matched_stations": 241,
+        "matched_evses": 1289
+      },
+      {
+        "uid": "eaaze_pbw",
+        "name": "PBW",
+        "locations_scanned": 63,
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0
+      },
+      {
+        "uid": "heilbronn_neckarbogen",
+        "name": "Heilbronn Neckarbogen",
+        "locations_scanned": 24,
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0
+      },
+      {
+        "uid": "ochp_albwerk",
+        "name": "Albwerk",
+        "locations_scanned": 175,
+        "matched_locations": 28,
+        "matched_stations": 28,
+        "matched_evses": 67
+      }
+    ]
   },
   "amenity_lookup": {
     "backend": "osm-pbf",
@@ -32,15 +108,15 @@
     "lookup_errors": 0,
     "cache_entries": 0,
     "osm_pbf_path": "data/germany-latest.osm.pbf",
-    "osm_pbf_bytes": 4729782987,
-    "osm_pbf_downloaded": true,
-    "osm_pbf_points": 332371,
-    "osm_pbf_grid_cells": 119574,
-    "osm_pbf_nodes_seen": 431098936,
-    "osm_pbf_ways_seen": 69825811,
-    "osm_pbf_relations_seen": 885774,
-    "osm_pbf_nodes_kept": 204666,
-    "osm_pbf_ways_kept": 127705
+    "osm_pbf_bytes": 4696943259,
+    "osm_pbf_downloaded": false,
+    "osm_pbf_points": 311190,
+    "osm_pbf_grid_cells": 192091,
+    "osm_pbf_nodes_seen": 428421303,
+    "osm_pbf_ways_seen": 69448908,
+    "osm_pbf_relations_seen": 880520,
+    "osm_pbf_nodes_kept": 193143,
+    "osm_pbf_ways_kept": 118047
   },
   "operators": {
     "min_stations": 100,

@@ -9,6 +9,7 @@ Fast chargers in Germany with nearby amenities from OpenStreetMap.
 - Ingests the official Bundesnetzagentur charging registry.
   Source discovery starts from the BNetzA E-Mobilitaet start page (`Downloads und Formulare`) and selects the newest CSV/XLSX link.
 - Filters to active chargers with at least `50 kW` nominal power.
+- Augments matched stations with live occupancy from the MobiData BW OCPI feeds.
 - Enriches each charger with nearby amenities (`100m` radius) from OSM
   using either local `germany-latest.osm.pbf` or Overpass fallback.
 - Publishes a mobile-ready static web map with filters (operator + amenities).
@@ -77,10 +78,12 @@ python scripts/build_site.py
 <!-- DATA_STATUS_START -->
 ## Data Build Status
 
-- Last build (UTC): `2026-04-01T00:15:28+00:00`
+- Last build (UTC): `2026-04-13T09:42:29+00:00`
 - Source: `https://data.bundesnetzagentur.de/Bundesnetzagentur/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenregister_BNetzA_2026-03-25.csv`
 - Fast chargers (>= 50.0 kW): `16347`
-- Chargers with >=1 nearby amenity: `14956`
+- Fast chargers with live occupancy: `280`
+- Chargers with >=1 nearby amenity: `11904`
+- Occupancy sources scanned: `8` (matched EVSEs: `1389`)
 - Amenity backend: `osm-pbf`
 - Live amenity lookups this run: `0` (cache hits: `0`, deferred: `0`)
 

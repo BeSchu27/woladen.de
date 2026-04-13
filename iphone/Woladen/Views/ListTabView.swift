@@ -60,6 +60,9 @@ private struct StationRowView: View {
     let markerColor: Color
 
     var body: some View {
+        let topAmenities = feature.properties.topAmenities()
+        let occupancy = feature.properties.occupancySummaryLabel
+
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
                 HStack(spacing: 6) {
@@ -82,10 +85,21 @@ private struct StationRowView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if !feature.properties.topAmenities().isEmpty {
+            if occupancy != nil || !topAmenities.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        ForEach(feature.properties.topAmenities(), id: \.key) { item in
+                        if let occupancy {
+                            Label(occupancy, systemImage: "dot.radiowaves.left.and.right")
+                                .font(.caption2)
+                                .lineLimit(1)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Color.teal.opacity(0.14))
+                                .foregroundStyle(Color.teal)
+                                .clipShape(Capsule())
+                        }
+
+                        ForEach(topAmenities, id: \.key) { item in
                             Label("\(item.count)", systemImage: AmenityCatalog.symbol(for: item.key))
                                 .font(.caption2)
                                 .lineLimit(1)

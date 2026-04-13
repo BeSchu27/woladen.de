@@ -4,8 +4,9 @@
 Pipeline steps:
 1. Fetch latest BNetzA charging registry CSV (with local cache fallback).
 2. Filter to active fast chargers (>= min power).
-3. Enrich chargers with nearby OSM amenities via local Germany PBF or Overpass.
-4. Write derived CSV + GeoJSON + summary artifacts and update README status block.
+3. Match stations with live occupancy from MobiData BW OCPI feeds where possible.
+4. Enrich chargers with nearby OSM amenities via local Germany PBF or Overpass.
+5. Write derived CSV + GeoJSON + summary artifacts and update README status block.
 """
 
 from __future__ import annotations
@@ -46,6 +47,8 @@ BNETZA_FILE_FALLBACKS = [
 ]
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 OSM_GERMANY_PBF_URL = "https://download.geofabrik.de/europe/germany-latest.osm.pbf"
+MOBIDATA_SOURCES_URL = "https://api.mobidata-bw.de/ocpdb/api/public/v1/sources"
+MOBIDATA_OCPI_LOCATIONS_URL = "https://api.mobidata-bw.de/ocpdb/api/ocpi/3.0/locations"
 
 DATA_DIR = Path("data")
 README_PATH = Path("README.md")
@@ -68,6 +71,13 @@ BNETZA_POWER_COLUMN_INDEX = 6  # 7th column in source file
 EARTH_RADIUS_M = 6_371_000.0
 MAX_REASONABLE_DISPLAY_POWER_KW = 400.0
 NUMERIC_TOKEN_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
+MOBIDATA_PAGE_LIMIT = 500
+MOBIDATA_TIMEOUT_SECONDS = 60
+MOBIDATA_IGNORED_SOURCE_UIDS = {"opendata_swiss"}
+OCCUPANCY_AVAILABLE_STATUSES = {"AVAILABLE"}
+OCCUPANCY_OCCUPIED_STATUSES = {"CHARGING", "BLOCKED", "RESERVED"}
+OCCUPANCY_OUT_OF_ORDER_STATUSES = {"OUTOFORDER", "INOPERATIVE"}
+OCCUPANCY_UNKNOWN_STATUSES = {"UNKNOWN", "STATIC", "PLANNED", "REMOVED"}
 
 AMENITY_BACKEND_OVERPASS = "overpass"
 AMENITY_BACKEND_OSM_PBF = "osm-pbf"
@@ -289,6 +299,65 @@ def to_max_numeric_token_float(
         series.apply(lambda value: max_numeric_token(value, clamp_max=clamp_max)),
         errors="coerce",
     )
+
+
+def normalize_evse_id(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return "".join(ch for ch in str(value).upper() if ch.isalnum())
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        normalized = value
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def choose_latest_timestamp(values: list[str]) -> str:
+    parsed: list[tuple[datetime, str]] = []
+    for value in values:
+        dt = parse_iso_datetime(value)
+        if dt is not None:
+            parsed.append((dt, value))
+    if parsed:
+        parsed.sort(key=lambda item: item[0])
+        return parsed[-1][1]
+    return values[-1] if values else ""
+
+
+def merge_unique_text_lists(series: pd.Series) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for value in series:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            continue
+
+        if isinstance(value, (list, tuple, set)):
+            candidates = value
+        else:
+            candidates = [value]
+
+        for candidate in candidates:
+            text = str(candidate).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+
+    return merged
+
+
+def normalize_occupancy_status(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return re.sub(r"[^A-Z]", "", str(value).upper())
 
 
 def detect_csv_encoding(csv_path: Path) -> str:
@@ -550,6 +619,7 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
     connector_power_cols = [
         col for col in df.columns if normalize_text(col).startswith("nennleistungstecker")
     ]
+    evse_id_cols = [col for col in df.columns if normalize_text(col).startswith("evseid")]
     if connector_power_cols:
         connector_power_frame = pd.DataFrame(
             {
@@ -577,6 +647,15 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
     # User-facing "max kW" should represent plausible stall power, not
     # summed cabinet/site power from source rows.
     df["max_power_kw"] = df["max_individual_power_kw_row"]
+    if evse_id_cols:
+        df["evse_ids_row"] = df[evse_id_cols].apply(
+            lambda row: merge_unique_text_lists(
+                pd.Series([normalize_evse_id(value) for value in row if normalize_evse_id(value)])
+            ),
+            axis=1,
+        )
+    else:
+        df["evse_ids_row"] = [[] for _ in range(len(df))]
 
     df["lat"] = to_float(df[lat_col])
     df["lon"] = to_float(df[lon_col])
@@ -656,6 +735,7 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
             postcode=("postcode", first_nonempty),
             city=("city", first_nonempty),
             address=("address", first_nonempty),
+            evse_ids=("evse_ids_row", merge_unique_text_lists),
         )
         .reset_index(drop=True)
     )
@@ -706,9 +786,290 @@ def build_fast_charger_frame(raw_df: pd.DataFrame, min_power_kw: float) -> pd.Da
         "postcode",
         "city",
         "address",
+        "evse_ids",
     ]
 
     return df[selected_columns].copy()
+
+
+def fetch_live_occupancy_sources(session: requests.Session) -> list[dict[str, str]]:
+    response = request_with_retries(
+        "GET",
+        MOBIDATA_SOURCES_URL,
+        session,
+        timeout=MOBIDATA_TIMEOUT_SECONDS,
+    )
+    payload = response.json()
+    items = payload.get("items", [])
+    sources: list[dict[str, str]] = []
+
+    for item in items:
+        uid = str(item.get("uid", "")).strip()
+        if not uid or uid in MOBIDATA_IGNORED_SOURCE_UIDS:
+            continue
+        if str(item.get("realtime_status", "")).upper() != "ACTIVE":
+            continue
+
+        name = str(item.get("name", "")).strip() or uid
+        sources.append({"uid": uid, "name": name})
+
+    sources.sort(key=lambda item: item["uid"])
+    return sources
+
+
+def merge_location_occupancy(
+    location: dict[str, Any],
+    *,
+    source_uid: str,
+    source_name: str,
+    evse_to_station: dict[str, str],
+    station_occupancy: dict[str, dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    matched_station_ids: set[str] = set()
+    matched_evse_ids: set[str] = set()
+
+    for pool in location.get("charging_pool", []) or []:
+        for evse in pool.get("evses", []) or []:
+            evse_id = normalize_evse_id(evse.get("evse_id") or evse.get("original_uid"))
+            if not evse_id:
+                continue
+
+            station_id = evse_to_station.get(evse_id)
+            if not station_id:
+                continue
+
+            matched_station_ids.add(station_id)
+            matched_evse_ids.add(evse_id)
+
+            station_state = station_occupancy.setdefault(
+                station_id,
+                {
+                    "source_uids": set(),
+                    "source_names": set(),
+                    "evses": {},
+                },
+            )
+            station_state["source_uids"].add(source_uid)
+            station_state["source_names"].add(source_name)
+
+            status = normalize_occupancy_status(evse.get("status")) or "UNKNOWN"
+            last_updated = (
+                str(evse.get("last_updated") or pool.get("last_updated") or location.get("last_updated") or "")
+                .strip()
+            )
+            existing = station_state["evses"].get(evse_id)
+            candidate_dt = parse_iso_datetime(last_updated)
+            existing_dt = parse_iso_datetime(existing.get("last_updated")) if existing else None
+
+            should_replace = existing is None
+            if existing is not None and candidate_dt is not None:
+                should_replace = existing_dt is None or candidate_dt >= existing_dt
+            elif existing is not None and existing_dt is None and candidate_dt is None:
+                should_replace = bool(status)
+
+            if should_replace:
+                station_state["evses"][evse_id] = {
+                    "status": status,
+                    "last_updated": last_updated,
+                }
+
+    return matched_station_ids, matched_evse_ids
+
+
+def summarize_station_occupancy(station_state: dict[str, Any]) -> dict[str, Any]:
+    status_counts: defaultdict[str, int] = defaultdict(int)
+    timestamps: list[str] = []
+
+    for evse in station_state.get("evses", {}).values():
+        status = normalize_occupancy_status(evse.get("status")) or "UNKNOWN"
+        status_counts[status] += 1
+        last_updated = str(evse.get("last_updated", "")).strip()
+        if last_updated:
+            timestamps.append(last_updated)
+
+    total = int(sum(status_counts.values()))
+    available = int(sum(status_counts[status] for status in OCCUPANCY_AVAILABLE_STATUSES))
+    occupied = int(sum(status_counts[status] for status in OCCUPANCY_OCCUPIED_STATUSES))
+    charging = int(status_counts["CHARGING"])
+    out_of_order = int(sum(status_counts[status] for status in OCCUPANCY_OUT_OF_ORDER_STATUSES))
+    unknown = int(max(0, total - available - occupied - out_of_order))
+
+    summary_status = ""
+    if total > 0:
+        if available > 0:
+            summary_status = "AVAILABLE"
+        elif occupied > 0:
+            summary_status = "OCCUPIED"
+        elif out_of_order > 0 and out_of_order == total:
+            summary_status = "OUT_OF_ORDER"
+        else:
+            summary_status = "UNKNOWN"
+
+    return {
+        "occupancy_source_uid": "|".join(sorted(station_state.get("source_uids", set()))),
+        "occupancy_source_name": " / ".join(sorted(station_state.get("source_names", set()))),
+        "occupancy_status": summary_status,
+        "occupancy_last_updated": choose_latest_timestamp(timestamps),
+        "occupancy_total_evses": total,
+        "occupancy_available_evses": available,
+        "occupancy_occupied_evses": occupied,
+        "occupancy_charging_evses": charging,
+        "occupancy_out_of_order_evses": out_of_order,
+        "occupancy_unknown_evses": unknown,
+    }
+
+
+def enrich_with_live_occupancy(
+    df: pd.DataFrame,
+    *,
+    session: requests.Session,
+    progress_every: int,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    enriched = df.copy()
+    default_columns: dict[str, Any] = {
+        "occupancy_source_uid": "",
+        "occupancy_source_name": "",
+        "occupancy_status": "",
+        "occupancy_last_updated": "",
+        "occupancy_total_evses": 0,
+        "occupancy_available_evses": 0,
+        "occupancy_occupied_evses": 0,
+        "occupancy_charging_evses": 0,
+        "occupancy_out_of_order_evses": 0,
+        "occupancy_unknown_evses": 0,
+    }
+    for column, default in default_columns.items():
+        enriched[column] = default
+
+    evse_to_station: dict[str, str] = {}
+    station_row_lookup: dict[str, int] = {}
+    for row_index, row in enriched.reset_index(drop=True).iterrows():
+        station_id = str(row["station_id"])
+        station_row_lookup[station_id] = row_index
+        for evse_id in row.get("evse_ids", []):
+            normalized = normalize_evse_id(evse_id)
+            if normalized and normalized not in evse_to_station:
+                evse_to_station[normalized] = station_id
+
+    stats: dict[str, Any] = {
+        "sources_discovered": 0,
+        "sources_used": 0,
+        "locations_scanned": 0,
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0,
+        "errors": [],
+        "sources": [],
+    }
+
+    if not evse_to_station:
+        return enriched, stats
+
+    try:
+        sources = fetch_live_occupancy_sources(session)
+    except (requests.RequestException, ValueError) as exc:
+        stats["errors"].append(f"source_discovery_failed: {exc}")
+        log_info(f"Live occupancy source discovery failed: {exc}")
+        return enriched, stats
+
+    stats["sources_discovered"] = len(sources)
+    if not sources:
+        return enriched, stats
+
+    station_occupancy: dict[str, dict[str, Any]] = {}
+    matched_station_ids: set[str] = set()
+    matched_evses: set[str] = set()
+
+    for source in sources:
+        source_uid = source["uid"]
+        source_name = source["name"]
+        source_locations_scanned = 0
+        source_matched_locations = 0
+        source_matched_stations: set[str] = set()
+        source_matched_evses: set[str] = set()
+        offset = 0
+        total_count = 0
+
+        try:
+            while True:
+                response = request_with_retries(
+                    "GET",
+                    MOBIDATA_OCPI_LOCATIONS_URL,
+                    session,
+                    timeout=MOBIDATA_TIMEOUT_SECONDS,
+                    params={
+                        "source_uid": source_uid,
+                        "limit": MOBIDATA_PAGE_LIMIT,
+                        "offset": offset,
+                    },
+                )
+                payload = response.json()
+                items = payload.get("items", [])
+                total_count = int(payload.get("total_count", source_locations_scanned + len(items)))
+                if not items:
+                    break
+
+                source_locations_scanned += len(items)
+                stats["locations_scanned"] += len(items)
+
+                for location in items:
+                    location_station_ids, location_evse_ids = merge_location_occupancy(
+                        location,
+                        source_uid=source_uid,
+                        source_name=source_name,
+                        evse_to_station=evse_to_station,
+                        station_occupancy=station_occupancy,
+                    )
+                    if location_station_ids:
+                        source_matched_locations += 1
+                        stats["matched_locations"] += 1
+                        source_matched_stations.update(location_station_ids)
+                        source_matched_evses.update(location_evse_ids)
+
+                if progress_every > 0 and (
+                    source_locations_scanned % progress_every == 0
+                    or source_locations_scanned >= total_count
+                ):
+                    log_info(
+                        "Live occupancy source progress: "
+                        f"{source_uid} {source_locations_scanned}/{total_count or '?'} "
+                        f"(matched stations: {len(source_matched_stations)})"
+                    )
+
+                offset += len(items)
+                if offset >= total_count:
+                    break
+        except (requests.RequestException, ValueError) as exc:
+            stats["errors"].append(f"{source_uid}: {exc}")
+            log_info(f"Live occupancy fetch failed for {source_uid}: {exc}")
+            continue
+
+        stats["sources"].append(
+            {
+                "uid": source_uid,
+                "name": source_name,
+                "locations_scanned": int(source_locations_scanned),
+                "matched_locations": int(source_matched_locations),
+                "matched_stations": int(len(source_matched_stations)),
+                "matched_evses": int(len(source_matched_evses)),
+            }
+        )
+        matched_station_ids.update(source_matched_stations)
+        matched_evses.update(source_matched_evses)
+
+    stats["sources_used"] = len(stats["sources"])
+
+    for station_id, station_state in station_occupancy.items():
+        row_index = station_row_lookup.get(station_id)
+        if row_index is None:
+            continue
+        summary = summarize_station_occupancy(station_state)
+        for column, value in summary.items():
+            enriched.at[row_index, column] = value
+
+    stats["matched_stations"] = int(len(matched_station_ids))
+    stats["matched_evses"] = int(len(matched_evses))
+    return enriched, stats
 
 
 def load_amenity_cache(path: Path) -> dict[str, Any]:
@@ -1599,6 +1960,16 @@ def dataframe_to_geojson(df: pd.DataFrame, source_meta: dict[str, Any]) -> dict[
             "postcode": row["postcode"],
             "city": row["city"],
             "address": row["address"],
+            "occupancy_source_uid": row.get("occupancy_source_uid", ""),
+            "occupancy_source_name": row.get("occupancy_source_name", ""),
+            "occupancy_status": row.get("occupancy_status", ""),
+            "occupancy_last_updated": row.get("occupancy_last_updated", ""),
+            "occupancy_total_evses": int(row.get("occupancy_total_evses", 0)),
+            "occupancy_available_evses": int(row.get("occupancy_available_evses", 0)),
+            "occupancy_occupied_evses": int(row.get("occupancy_occupied_evses", 0)),
+            "occupancy_charging_evses": int(row.get("occupancy_charging_evses", 0)),
+            "occupancy_out_of_order_evses": int(row.get("occupancy_out_of_order_evses", 0)),
+            "occupancy_unknown_evses": int(row.get("occupancy_unknown_evses", 0)),
             "amenities_total": int(row["amenities_total"]),
             "amenities_source": row["amenities_source"],
             "amenity_examples": decode_amenity_examples(row.get("amenity_examples", "[]")),
@@ -1729,6 +2100,7 @@ def update_readme_status(readme_path: Path, summary: dict[str, Any]) -> None:
     source = summary["source"]
     records = summary["records"]
     lookup = summary["amenity_lookup"]
+    occupancy = summary.get("occupancy_lookup", {})
 
     block = "\n".join(
         [
@@ -1738,7 +2110,12 @@ def update_readme_status(readme_path: Path, summary: dict[str, Any]) -> None:
             f"- Last build (UTC): `{run['started_at']}`",
             f"- Source: `{source.get('source_url', 'unknown')}`",
             f"- Fast chargers (>= {summary['params']['min_power_kw']} kW): `{records['fast_chargers_total']}`",
+            f"- Fast chargers with live occupancy: `{records.get('stations_with_live_occupancy', 0)}`",
             f"- Chargers with >=1 nearby amenity: `{records['stations_with_amenities']}`",
+            (
+                f"- Occupancy sources scanned: `{occupancy.get('sources_used', 0)}` "
+                f"(matched EVSEs: `{occupancy.get('matched_evses', 0)}`)"
+            ),
             f"- Amenity backend: `{lookup.get('backend', 'overpass')}`",
             (
                 f"- Live amenity lookups this run: `{lookup['queries_used']}` "
@@ -1794,15 +2171,15 @@ def main() -> None:
         }
     )
 
-    log_info("Stage 1/6: Fetching BNetzA source")
+    log_info("Stage 1/7: Fetching BNetzA source")
     source_meta = fetch_bnetza_csv(session, RAW_CACHE_PATH, RAW_META_PATH)
     log_info(f"Source ready: {source_meta.get('source_url', 'unknown')}")
 
-    log_info("Stage 2/6: Loading and normalizing raw source")
+    log_info("Stage 2/7: Loading and normalizing raw source")
     raw_df = load_raw_dataframe(RAW_CACHE_PATH)
     log_info(f"Raw rows loaded: {len(raw_df)}")
 
-    log_info("Stage 3/6: Building filtered fast charger frame")
+    log_info("Stage 3/7: Building filtered fast charger frame")
     fast_df = build_fast_charger_frame(raw_df, min_power_kw=args.min_power_kw)
     log_info(f"Fast chargers after filter: {len(fast_df)}")
 
@@ -1810,9 +2187,23 @@ def main() -> None:
         fast_df = fast_df.head(args.max_stations).reset_index(drop=True)
         log_info(f"Applied max_stations cap: {len(fast_df)} rows")
 
-    log_info("Stage 4/6: Enriching chargers with nearby amenities")
-    enriched_df, amenity_stats = enrich_with_amenities(
+    log_info("Stage 4/7: Matching live occupancy from MobiData BW")
+    occupied_df, occupancy_stats = enrich_with_live_occupancy(
         fast_df,
+        session=session,
+        progress_every=args.progress_every,
+    )
+    log_info(
+        "Live occupancy enrichment done: "
+        f"sources={occupancy_stats['sources_used']}, "
+        f"matched_stations={occupancy_stats['matched_stations']}, "
+        f"matched_evses={occupancy_stats['matched_evses']}, "
+        f"errors={len(occupancy_stats['errors'])}"
+    )
+
+    log_info("Stage 5/7: Enriching chargers with nearby amenities")
+    enriched_df, amenity_stats = enrich_with_amenities(
+        occupied_df,
         session=session,
         radius_m=args.radius_m,
         query_budget=args.query_budget,
@@ -1839,17 +2230,19 @@ def main() -> None:
         ascending=[False, False],
     ).reset_index(drop=True)
 
-    log_info("Stage 5/6: Writing data artifacts")
-    FAST_CSV_PATH.write_text(enriched_df.to_csv(index=False), encoding="utf-8")
+    export_df = enriched_df.drop(columns=["evse_ids"], errors="ignore").copy()
 
-    geojson = dataframe_to_geojson(enriched_df, source_meta)
+    log_info("Stage 6/7: Writing data artifacts")
+    FAST_CSV_PATH.write_text(export_df.to_csv(index=False), encoding="utf-8")
+
+    geojson = dataframe_to_geojson(export_df, source_meta)
     FAST_GEOJSON_PATH.write_text(
         json.dumps(geojson, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
     operators_payload = build_operator_list(
-        enriched_df,
+        export_df,
         min_stations=args.operator_min_stations,
     )
     OPERATORS_JSON_PATH.write_text(
@@ -1857,7 +2250,8 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    stations_with_amenities = int((enriched_df["amenities_total"] > 0).sum())
+    stations_with_amenities = int((export_df["amenities_total"] > 0).sum())
+    stations_with_live_occupancy = int((export_df["occupancy_total_evses"] > 0).sum())
 
     summary = {
         "run": {
@@ -1876,9 +2270,11 @@ def main() -> None:
         },
         "records": {
             "raw_rows": int(len(raw_df)),
-            "fast_chargers_total": int(len(enriched_df)),
+            "fast_chargers_total": int(len(export_df)),
+            "stations_with_live_occupancy": stations_with_live_occupancy,
             "stations_with_amenities": stations_with_amenities,
         },
+        "occupancy_lookup": occupancy_stats,
         "amenity_lookup": amenity_stats,
         "operators": {
             "min_stations": int(args.operator_min_stations),
@@ -1891,7 +2287,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    log_info("Stage 6/6: Updating run history and README status")
+    log_info("Stage 7/7: Updating run history and README status")
     write_run_history(RUN_HISTORY_PATH, summary)
     update_readme_status(README_PATH, summary)
     log_info(f"Pipeline completed in {format_duration(time.monotonic() - pipeline_started)}")

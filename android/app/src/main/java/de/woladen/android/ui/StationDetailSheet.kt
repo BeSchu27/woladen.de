@@ -136,6 +136,25 @@ fun StationDetailSheet(
                     }
                 }
 
+                feature.properties.occupancySummaryLabel?.let { occupancy ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Outlined.Info, contentDescription = null)
+                            Text(occupancy)
+                        }
+                        feature.properties.occupancySourceLabel?.let { source ->
+                            Text(
+                                source,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = {
                         openUri(
