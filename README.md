@@ -40,7 +40,7 @@ Fast chargers in Germany with nearby amenities from OpenStreetMap.
 The static frontend and the live backend are deployed separately:
 
 - `https://woladen.de`: static frontend
-- `https://live.woladen.de`: FastAPI backend on an IONOS VPS
+- `https://live.woladen.de`: FastAPI backend for AFIR dynamic data on chargers, receiving DATEX II v3 pull subscriptions from Mobilithek, where available
 
 Backend docs:
 
