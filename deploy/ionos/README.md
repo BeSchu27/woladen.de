@@ -9,6 +9,7 @@ This package targets a small IONOS VPS where:
 - the archive job can upload to Hugging Face Hub with a token file
 - releases are staged under `/srv/woladen-live/releases/` and activated via the `current` symlink
 - the first automated deploy can migrate a legacy `/srv/woladen-live/current` directory into the staged release layout automatically
+- if Caddy is installed, the deploy also manages `/etc/caddy/Caddyfile` or appends an import for the rendered live API snippet automatically
 
 ## Files
 
@@ -103,6 +104,7 @@ Important:
 - the VPS only needs the deploy user's public key in `authorized_keys`
 - GitHub must store the matching private key in `LIVE_DEPLOY_SSH_PRIVATE_KEY`
 - the deploy user still needs `sudo` rights on the VPS because installation writes into `/srv`, `/etc/systemd/system`, and `/etc/cron.d`
+- the workflow uploads `certificate.p12`, `pwd.txt`, `mobilithek_subscriptions.json`, and `huggingface.token` into `/etc/woladen/` automatically during each deploy
 
 ## Required Remote Secrets
 
@@ -123,9 +125,12 @@ The installer renders a Caddy config snippet to:
 /etc/woladen/live.woladen.de.Caddyfile
 ```
 
-If this server is dedicated to the live API, you can replace `/etc/caddy/Caddyfile`
-with that file. If Caddy already serves other apps, import the rendered snippet
-into your existing config instead.
+If `caddy.service` exists, the deploy now automates the active config as well:
+
+- when `/etc/caddy/Caddyfile` does not exist yet, it installs the rendered live API config as the primary Caddyfile
+- when `/etc/caddy/Caddyfile` already exists, it reuses an existing `/etc/woladen/*.Caddyfile` import if present
+- otherwise it appends `import /etc/woladen/live.woladen.de.Caddyfile`
+- it validates the resulting Caddy config and starts or reloads `caddy` as needed
 
 ## Verification
 

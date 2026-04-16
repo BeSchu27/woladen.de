@@ -348,6 +348,8 @@ install_optional_file "$remote_tmp_dir/mobilithek_subscriptions.json" "$subscrip
 install_optional_file "$remote_tmp_dir/huggingface.token" "$hf_token_target" hf_token_changed
 install_optional_file "$remote_tmp_dir/woladen-live.env" "$env_file" env_changed
 
+echo "Runtime config sync: cert=${cert_changed:-0} pwd=${password_changed:-0} subscriptions=${subscriptions_changed:-0} hf_token=${hf_token_changed:-0} env=${env_changed:-0}"
+
 if [[ -n "$hf_repo_id" ]]; then
   upsert_env_value "WOLADEN_LIVE_HF_ARCHIVE_REPO_ID" "$hf_repo_id"
 fi

@@ -103,8 +103,11 @@ RELEASE_DIR="$RELEASES_DIR/$BUNDLE_NAME"
 VENV_DIR="$INSTALL_ROOT/venv"
 ENV_FILE="$CONFIG_DIR/woladen-live.env"
 RENDERED_CADDYFILE="$CONFIG_DIR/${LIVE_DOMAIN}.Caddyfile"
+CADDY_MAIN_CONFIG=/etc/caddy/Caddyfile
 CRON_FILE=/etc/cron.d/woladen-live-log-archive
 CURRENT_RELEASE_DIR=""
+CADDY_AUTOMATION_STATUS="not-managed"
+RENDERED_CADDYFILE_CHANGED=0
 
 require_path() {
   local path=$1
@@ -141,6 +144,54 @@ render_template() {
     -e "s|__STATE_DIR__|$STATE_DIR|g" \
     -e "s|live.woladen.de|$LIVE_DOMAIN|g" \
     "$template" >"$target"
+}
+
+ensure_caddy_integration() {
+  local import_line
+
+  if ! systemctl list-unit-files caddy.service >/dev/null 2>&1; then
+    CADDY_AUTOMATION_STATUS="service-missing"
+    return
+  fi
+
+  install -d -m 0755 "$(dirname "$CADDY_MAIN_CONFIG")"
+  import_line="import $RENDERED_CADDYFILE"
+
+  if [[ ! -f "$CADDY_MAIN_CONFIG" ]]; then
+    install -D -m 0644 "$RENDERED_CADDYFILE" "$CADDY_MAIN_CONFIG"
+    CADDY_AUTOMATION_STATUS="installed-primary-config"
+  elif grep -Eq "^[[:space:]]*import[[:space:]]+(/etc/woladen/[^[:space:]]+\\.Caddyfile|/etc/woladen/\\*\\.Caddyfile)([[:space:]]|$)" "$CADDY_MAIN_CONFIG"; then
+    CADDY_AUTOMATION_STATUS="managed-via-import"
+  elif grep -Fqx "$import_line" "$CADDY_MAIN_CONFIG"; then
+    CADDY_AUTOMATION_STATUS="managed-via-import"
+  else
+    printf '\n# Managed by woladen live deploy\n%s\n' "$import_line" >>"$CADDY_MAIN_CONFIG"
+    CADDY_AUTOMATION_STATUS="appended-import"
+  fi
+
+  if command -v caddy >/dev/null 2>&1; then
+    caddy validate --config "$CADDY_MAIN_CONFIG"
+  fi
+  systemctl enable caddy.service >/dev/null 2>&1 || true
+  if systemctl is-active --quiet caddy.service; then
+    if [[ "$CADDY_AUTOMATION_STATUS" == "installed-primary-config" || "$CADDY_AUTOMATION_STATUS" == "appended-import" || $RENDERED_CADDYFILE_CHANGED -eq 1 ]]; then
+      systemctl reload caddy
+    fi
+  else
+    systemctl start caddy.service
+  fi
+}
+
+render_managed_caddyfile() {
+  local temp_path
+
+  temp_path=$(mktemp)
+  render_template "$RELEASE_DIR/deploy/ionos/Caddyfile" "$temp_path"
+  if [[ ! -f "$RENDERED_CADDYFILE" ]] || ! cmp -s "$temp_path" "$RENDERED_CADDYFILE"; then
+    install -D -m 0644 "$temp_path" "$RENDERED_CADDYFILE"
+    RENDERED_CADDYFILE_CHANGED=1
+  fi
+  rm -f "$temp_path"
 }
 
 resolve_current_release_dir() {
@@ -270,13 +321,12 @@ render_template \
 render_template \
   "$RELEASE_DIR/deploy/ionos/woladen-live-ingester.service" \
   /etc/systemd/system/woladen-live-ingester.service
-render_template \
-  "$RELEASE_DIR/deploy/ionos/Caddyfile" \
-  "$RENDERED_CADDYFILE"
+render_managed_caddyfile
 render_template \
   "$RELEASE_DIR/deploy/ionos/woladen-live-log-archive.cron" \
   "$CRON_FILE"
 chmod 0644 "$CRON_FILE"
+ensure_caddy_integration
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
@@ -306,13 +356,6 @@ Virtualenv refreshed: $REQUIRES_VENV_REFRESH
 State dir: $STATE_DIR
 Env file: $ENV_FILE
 Rendered Caddyfile: $RENDERED_CADDYFILE
-
-Next steps:
-1. Copy certificate.p12, pwd.txt, and mobilithek_subscriptions.json into $CONFIG_DIR
-2. Add a Hugging Face token at $CONFIG_DIR/huggingface.token; the default env file targets loffenauer/AFIR
-3. Edit $ENV_FILE if any paths differ
-4. Copy or import $RENDERED_CADDYFILE into your Caddy config
-5. Run: systemctl restart woladen-live-api.service woladen-live-ingester.service
-6. Check: journalctl -u woladen-live-api.service -u woladen-live-ingester.service -n 100 --no-pager
-7. Check archive job output in: $STATE_DIR/live-log-archive.log
+Cron file: $CRON_FILE
+Caddy automation: $CADDY_AUTOMATION_STATUS
 EOF
