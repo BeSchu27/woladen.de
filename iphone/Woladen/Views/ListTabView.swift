@@ -18,7 +18,7 @@ struct ListTabView: View {
                 } else {
                     List(viewModel.discoveredFeatures) { feature in
                         Button {
-                            viewModel.selectedFeature = feature
+                            viewModel.selectFeature(feature)
                         } label: {
                             StationRowView(
                                 feature: feature,
@@ -61,8 +61,8 @@ private struct StationRowView: View {
 
     var body: some View {
         let topAmenities = feature.properties.topAmenities()
-        let occupancy = feature.properties.occupancySummaryLabel
-        let priceDisplay = feature.properties.priceDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
+        let occupancy = feature.occupancySummaryLabel
+        let priceDisplay = feature.displayPrice
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
@@ -86,7 +86,7 @@ private struct StationRowView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if occupancy != nil || !priceDisplay.isEmpty || !topAmenities.isEmpty {
+            if occupancy != nil || !priceDisplay.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         if let occupancy {
@@ -95,8 +95,8 @@ private struct StationRowView: View {
                                 .lineLimit(1)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(Color.teal.opacity(0.14))
-                                .foregroundStyle(Color.teal)
+                                .background(occupancyBackgroundColor.opacity(0.16))
+                                .foregroundStyle(occupancyBackgroundColor)
                                 .clipShape(Capsule())
                         }
 
@@ -110,7 +110,13 @@ private struct StationRowView: View {
                                 .foregroundStyle(Color.green)
                                 .clipShape(Capsule())
                         }
+                    }
+                }
+            }
 
+            if !topAmenities.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
                         ForEach(topAmenities, id: \.key) { item in
                             Label("\(item.count)", systemImage: AmenityCatalog.symbol(for: item.key))
                                 .font(.caption2)
@@ -125,5 +131,18 @@ private struct StationRowView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private var occupancyBackgroundColor: Color {
+        switch feature.availabilityStatus {
+        case .free:
+            return Color.teal
+        case .occupied:
+            return Color.orange
+        case .outOfOrder:
+            return Color.red
+        case .unknown:
+            return Color.secondary
+        }
     }
 }

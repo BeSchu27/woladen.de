@@ -17,6 +17,8 @@ struct GeoJSONFeature: Decodable, Identifiable {
     let id: String
     let geometry: GeoJSONPointGeometry
     let properties: ChargerProperties
+    var liveSummary: LiveStationSummary?
+    var liveDetail: LiveStationDetail?
 
     enum CodingKeys: String, CodingKey {
         case geometry
@@ -28,6 +30,22 @@ struct GeoJSONFeature: Decodable, Identifiable {
         geometry = try container.decode(GeoJSONPointGeometry.self, forKey: .geometry)
         properties = try container.decode(ChargerProperties.self, forKey: .properties)
         id = properties.stationID
+        liveSummary = nil
+        liveDetail = nil
+    }
+
+    init(
+        id: String,
+        geometry: GeoJSONPointGeometry,
+        properties: ChargerProperties,
+        liveSummary: LiveStationSummary? = nil,
+        liveDetail: LiveStationDetail? = nil
+    ) {
+        self.id = id
+        self.geometry = geometry
+        self.properties = properties
+        self.liveSummary = liveSummary
+        self.liveDetail = liveDetail
     }
 
     var coordinate: CLLocationCoordinate2D {

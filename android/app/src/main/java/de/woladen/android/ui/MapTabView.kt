@@ -64,7 +64,7 @@ fun MapTabView(
             features = viewModel.discoveredFeatures,
             userLocation = locationService.currentLocation,
             markerTint = viewModel::markerTint,
-            onFeatureTap = { feature -> viewModel.selectedFeature = feature },
+            onFeatureTap = { feature -> viewModel.selectFeature(feature) },
             onMapIdle = { lat, lon ->
                 val shouldQuery = shouldQuery(lastQueriedCenter, lat, lon)
                 if (shouldQuery) {

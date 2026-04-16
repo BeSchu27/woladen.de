@@ -15,7 +15,7 @@ struct FavoritesTabView: View {
                 List(items) { feature in
                     HStack(spacing: 10) {
                         Button {
-                            viewModel.selectedFeature = feature
+                            viewModel.selectFeature(feature)
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(feature.properties.operatorName)
@@ -25,6 +25,23 @@ struct FavoritesTabView: View {
                                 Text("\(Int(feature.properties.displayedMaxPowerKW.rounded())) kW max • \(feature.properties.chargingPointsCount) Ladepunkte")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if let occupancy = feature.occupancySummaryLabel ?? nil, !occupancy.isEmpty {
+                                    Label(occupancy, systemImage: "dot.radiowaves.left.and.right")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(favoriteOccupancyColor(for: feature).opacity(0.16))
+                                        .foregroundStyle(favoriteOccupancyColor(for: feature))
+                                        .clipShape(Capsule())
+                                } else if !feature.displayPrice.isEmpty {
+                                    Label(feature.displayPrice, systemImage: "eurosign")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.green.opacity(0.12))
+                                        .foregroundStyle(Color.green)
+                                        .clipShape(Capsule())
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -41,6 +58,25 @@ struct FavoritesTabView: View {
                 }
                 .listStyle(.plain)
             }
+        }
+        .task(id: items.map(\.id).joined(separator: "|")) {
+            while !Task.isCancelled {
+                await viewModel.refreshFavoritesLiveSummaries(favoritesStore.favorites, force: true)
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+            }
+        }
+    }
+
+    private func favoriteOccupancyColor(for feature: GeoJSONFeature) -> Color {
+        switch feature.availabilityStatus {
+        case .free:
+            return Color.teal
+        case .occupied:
+            return Color.orange
+        case .outOfOrder:
+            return Color.red
+        case .unknown:
+            return Color.secondary
         }
     }
 }

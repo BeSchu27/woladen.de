@@ -23,7 +23,7 @@ struct MapTabView: View {
                 ForEach(mapItems()) { feature in
                     Annotation("", coordinate: feature.coordinate) {
                         Button {
-                            viewModel.selectedFeature = feature
+                            viewModel.selectFeature(feature)
                         } label: {
                             Circle()
                                 .fill(color(for: viewModel.markerTint(for: feature)))

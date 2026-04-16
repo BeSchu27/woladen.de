@@ -29,7 +29,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import de.woladen.android.model.AvailabilityStatus
+import de.woladen.android.model.availabilityStatus
 import de.woladen.android.model.GeoJsonFeature
+import de.woladen.android.model.displayPrice
+import de.woladen.android.model.occupancySummaryLabel
 import de.woladen.android.service.LocationService
 import de.woladen.android.ui.components.AmenityIcon
 import de.woladen.android.ui.components.markerColorForKey
@@ -76,7 +80,7 @@ fun ListTabView(
                                 longitude = feature.longitude
                             ),
                             markerColor = Color(markerColorForKey(viewModel.markerTint(feature))),
-                            onClick = { viewModel.selectedFeature = feature }
+                            onClick = { viewModel.selectFeature(feature) }
                         )
                     }
                 }
@@ -143,9 +147,9 @@ private fun StationRow(
             )
 
             val amenities = feature.properties.topAmenities()
-            val occupancy = feature.properties.occupancySummaryLabel
-            val priceDisplay = feature.properties.priceDisplay.trim()
-            if (occupancy != null || priceDisplay.isNotBlank() || amenities.isNotEmpty()) {
+            val occupancy = feature.occupancySummaryLabel
+            val priceDisplay = feature.displayPrice.trim()
+            if (occupancy != null || priceDisplay.isNotBlank()) {
                 Row(
                     modifier = Modifier
                         .padding(top = 6.dp)
@@ -155,8 +159,8 @@ private fun StationRow(
                     occupancy?.let {
                         ListChip(
                             text = it,
-                            containerColor = Color(0x1F0F766E),
-                            contentColor = Color(0xFF0F766E)
+                            containerColor = occupancyColor(feature).copy(alpha = 0.16f),
+                            contentColor = occupancyColor(feature)
                         )
                     }
 
@@ -168,7 +172,16 @@ private fun StationRow(
                             contentColor = Color(0xFF15803D)
                         )
                     }
+                }
+            }
 
+            if (amenities.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     for (item in amenities) {
                         Row(
                             modifier = Modifier
@@ -191,6 +204,15 @@ private fun StationRow(
                 }
             }
         }
+    }
+}
+
+private fun occupancyColor(feature: GeoJsonFeature): Color {
+    return when (feature.availabilityStatus) {
+        AvailabilityStatus.FREE -> Color(0xFF0F766E)
+        AvailabilityStatus.OCCUPIED -> Color(0xFFB45309)
+        AvailabilityStatus.OUT_OF_ORDER -> Color(0xFFB91C1C)
+        AvailabilityStatus.UNKNOWN -> Color.Gray
     }
 }
 

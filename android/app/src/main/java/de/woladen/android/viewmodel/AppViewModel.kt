@@ -11,12 +11,16 @@ import androidx.lifecycle.viewModelScope
 import de.woladen.android.model.ActiveDataBundleInfo
 import de.woladen.android.model.FilterState
 import de.woladen.android.model.GeoJsonFeature
+import de.woladen.android.model.LiveStationDetail
+import de.woladen.android.model.LiveStationSummary
 import de.woladen.android.model.OperatorEntry
 import de.woladen.android.model.matches
 import de.woladen.android.repository.ChargerRepository
 import de.woladen.android.repository.DataBundleManager
+import de.woladen.android.service.LiveApiClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,6 +52,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var filterState: FilterState by mutableStateOf(FilterState())
 
     var selectedFeature: GeoJsonFeature? by mutableStateOf(null)
+        private set
 
     var selectedTab: AppTab by mutableStateOf(AppTab.LIST)
 
@@ -62,14 +67,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val dataBundleManager = DataBundleManager(application.applicationContext)
     private val repository = ChargerRepository(dataBundleManager)
+    private val liveApiClient = LiveApiClient()
 
     private val maxVisibleChargers = 20
     private val maxDiscoveredHistory = 200
+    private val liveRefreshIntervalMs = 15_000L
+
     private var filterPool: List<GeoJsonFeature> = emptyList()
     private val discoveredById: MutableMap<String, GeoJsonFeature> = linkedMapOf()
     private val discoveredOrder: MutableList<String> = mutableListOf()
     private var didSeedFromUserLocation = false
+
+    private val liveSummaryFetchedAtByStationId: MutableMap<String, Long> = mutableMapOf()
+    private val liveDetailFetchedAtByStationId: MutableMap<String, Long> = mutableMapOf()
+    private val pendingLiveSummaryStationIds: MutableSet<String> = mutableSetOf()
+    private val pendingLiveDetailStationIds: MutableSet<String> = mutableSetOf()
+
     private var refreshNearbyJob: Job? = null
+    private var liveSummaryRefreshJob: Job? = null
+    private var selectedFeatureRefreshJob: Job? = null
+
+    init {
+        startLiveSummaryRefreshLoop()
+    }
+
+    override fun onCleared() {
+        refreshNearbyJob?.cancel()
+        liveSummaryRefreshJob?.cancel()
+        selectedFeatureRefreshJob?.cancel()
+        super.onCleared()
+    }
 
     fun load(userLocation: Location?) {
         isLoading = true
@@ -86,19 +113,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             isLoading = false
             result.onSuccess { (features, operators, bundle) ->
+                resetLiveState()
                 allFeatures = features
                 this@AppViewModel.operators = operators
                 activeBundleInfo = bundle
                 loadError = null
                 didSeedFromUserLocation = false
                 applyFilters(userLocation)
+                viewModelScope.launch {
+                    requestLiveSummaries(trackedStationIds(), force = true)
+                }
             }.onFailure { error ->
                 loadError = error.localizedMessage
                 allFeatures = emptyList()
                 filterPool = emptyList()
                 discoveredFeatures = emptyList()
                 operators = emptyList()
+                activeBundleInfo = null
                 refreshNearbyJob?.cancel()
+                resetLiveState()
             }
         }
     }
@@ -139,6 +172,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (userLocation != null) {
             didSeedFromUserLocation = true
             refreshNearbyAsync(userLocation.latitude, userLocation.longitude)
+        } else {
+            seedFallbackDiscoveredFeatures()
+            viewModelScope.launch {
+                requestLiveSummaries(trackedStationIds(), force = true)
+            }
         }
     }
 
@@ -149,13 +187,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun seedFromInitialUserLocation(location: Location?) {
         if (location == null || allFeatures.isEmpty()) return
         if (!didSeedFromUserLocation) {
-            if (discoveredFeatures.isEmpty()) {
-                applyFilters(location)
-            } else {
-                refreshNearbyAsync(location.latitude, location.longitude)
-            }
-            didSeedFromUserLocation = true
+            // Replace the fallback seed with a real nearby selection once GPS is available.
+            applyFilters(location)
         }
+    }
+
+    fun selectFeature(feature: GeoJsonFeature) {
+        val stationId = feature.properties.stationId
+        selectedFeature = featureForStationId(stationId) ?: feature
+        startSelectedFeatureRefresh(stationId)
+    }
+
+    fun clearSelectedFeature() {
+        selectedFeature = null
+        selectedFeatureRefreshJob?.cancel()
+        selectedFeatureRefreshJob = null
+    }
+
+    fun featureForStationId(stationId: String): GeoJsonFeature? {
+        return allFeatures.firstOrNull { it.properties.stationId == stationId }
+            ?: discoveredFeatures.firstOrNull { it.properties.stationId == stationId }
+            ?: selectedFeature?.takeIf { it.properties.stationId == stationId }
+    }
+
+    suspend fun refreshFavoritesLiveSummaries(favorites: Set<String>, force: Boolean = false) {
+        requestLiveSummaries(favorites.toList(), force = force)
     }
 
     fun favoritesFeatures(favorites: Set<String>, userLocation: Location?): List<GeoJsonFeature> {
@@ -202,11 +258,187 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    suspend fun requestLiveDetailIfNeeded(stationId: String, force: Boolean = false) {
+        val trimmedStationId = stationId.trim()
+        if (trimmedStationId.isBlank()) return
+        if (!liveApiClient.isEnabled) return
+        if (pendingLiveDetailStationIds.contains(trimmedStationId)) return
+
+        val now = System.currentTimeMillis()
+        if (!force) {
+            val lastFetch = liveDetailFetchedAtByStationId[trimmedStationId]
+            if (lastFetch != null && now - lastFetch < liveRefreshIntervalMs) {
+                return
+            }
+        }
+
+        pendingLiveDetailStationIds += trimmedStationId
+        try {
+            val detail = liveApiClient.stationDetail(trimmedStationId)
+            liveDetailFetchedAtByStationId[trimmedStationId] = now
+            liveSummaryFetchedAtByStationId[trimmedStationId] = now
+            applyLiveDetail(trimmedStationId, detail)
+        } catch (_: Exception) {
+            // Keep offline behavior intact by silently falling back to bundled data.
+        } finally {
+            pendingLiveDetailStationIds -= trimmedStationId
+        }
+    }
+
+    suspend fun requestLiveSummaries(stationIds: List<String>, force: Boolean = false) {
+        if (!liveApiClient.isEnabled) return
+
+        val normalizedIds = stationIds
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        if (normalizedIds.isEmpty()) return
+
+        val now = System.currentTimeMillis()
+        val eligibleIds = normalizedIds.filter { stationId ->
+            if (pendingLiveSummaryStationIds.contains(stationId)) {
+                return@filter false
+            }
+            if (force) {
+                return@filter true
+            }
+            val lastFetch = liveSummaryFetchedAtByStationId[stationId]
+            lastFetch == null || now - lastFetch >= liveRefreshIntervalMs
+        }
+
+        if (eligibleIds.isEmpty()) return
+
+        pendingLiveSummaryStationIds += eligibleIds
+        try {
+            val response = liveApiClient.lookupStations(eligibleIds)
+            val fetchedAt = System.currentTimeMillis()
+            (response.stations.map { it.stationId } + response.missingStationIds).forEach { stationId ->
+                liveSummaryFetchedAtByStationId[stationId] = fetchedAt
+            }
+            applyLiveSummaries(response.stations.associateBy { it.stationId }, response.missingStationIds.toSet())
+        } catch (_: Exception) {
+            // Keep offline behavior intact by silently falling back to bundled data.
+        } finally {
+            pendingLiveSummaryStationIds -= eligibleIds.toSet()
+        }
+    }
+
+    private fun startLiveSummaryRefreshLoop() {
+        liveSummaryRefreshJob?.cancel()
+        liveSummaryRefreshJob = viewModelScope.launch {
+            while (isActive) {
+                requestLiveSummaries(trackedStationIds())
+                delay(liveRefreshIntervalMs)
+            }
+        }
+    }
+
+    private fun trackedStationIds(): List<String> {
+        val ids = linkedSetOf<String>()
+        discoveredFeatures.mapTo(ids) { it.properties.stationId }
+        selectedFeature?.properties?.stationId?.let(ids::add)
+        return ids.toList()
+    }
+
+    private fun startSelectedFeatureRefresh(stationId: String) {
+        selectedFeatureRefreshJob?.cancel()
+        selectedFeatureRefreshJob = viewModelScope.launch {
+            requestLiveDetailIfNeeded(stationId, force = true)
+            while (isActive) {
+                delay(liveRefreshIntervalMs)
+                if (selectedFeature?.properties?.stationId != stationId) {
+                    return@launch
+                }
+                requestLiveDetailIfNeeded(stationId, force = true)
+            }
+        }
+    }
+
+    private fun applyLiveSummaries(
+        summariesByStationId: Map<String, LiveStationSummary>,
+        missingStationIds: Set<String>
+    ) {
+        val affectedIds = summariesByStationId.keys + missingStationIds
+        if (affectedIds.isEmpty()) return
+
+        updateFeatureCollections(affectedIds.toSet()) { feature ->
+            val stationId = feature.properties.stationId
+            when {
+                summariesByStationId.containsKey(stationId) -> feature.copy(
+                    liveSummary = summariesByStationId.getValue(stationId)
+                )
+                missingStationIds.contains(stationId) -> feature.copy(liveSummary = null)
+                else -> feature
+            }
+        }
+    }
+
+    private fun applyLiveDetail(stationId: String, detail: LiveStationDetail) {
+        updateFeatureCollections(setOf(stationId)) { feature ->
+            feature.copy(
+                liveSummary = detail.station,
+                liveDetail = detail
+            )
+        }
+    }
+
+    private fun updateFeatureCollections(
+        stationIds: Set<String>,
+        updater: (GeoJsonFeature) -> GeoJsonFeature
+    ) {
+        if (stationIds.isEmpty()) return
+
+        allFeatures = allFeatures.map { feature ->
+            if (stationIds.contains(feature.properties.stationId)) updater(feature) else feature
+        }
+        filterPool = filterPool.map { feature ->
+            if (stationIds.contains(feature.properties.stationId)) updater(feature) else feature
+        }
+        val updatedDiscoveredById = linkedMapOf<String, GeoJsonFeature>()
+        for ((id, feature) in discoveredById) {
+            updatedDiscoveredById[id] =
+                if (stationIds.contains(feature.properties.stationId)) updater(feature) else feature
+        }
+        discoveredById.clear()
+        discoveredById.putAll(updatedDiscoveredById)
+        discoveredFeatures = discoveredFeatures.map { feature ->
+            if (stationIds.contains(feature.properties.stationId)) updater(feature) else feature
+        }
+        selectedFeature = selectedFeature?.let { feature ->
+            if (stationIds.contains(feature.properties.stationId)) updater(feature) else feature
+        }
+    }
+
+    private fun resetLiveState() {
+        liveSummaryFetchedAtByStationId.clear()
+        liveDetailFetchedAtByStationId.clear()
+        pendingLiveSummaryStationIds.clear()
+        pendingLiveDetailStationIds.clear()
+        clearSelectedFeature()
+    }
+
     private fun resetDiscoveredList() {
         refreshNearbyJob?.cancel()
         discoveredById.clear()
         discoveredOrder.clear()
         discoveredFeatures = emptyList()
+    }
+
+    private fun seedFallbackDiscoveredFeatures() {
+        if (filterPool.isEmpty()) {
+            discoveredFeatures = emptyList()
+            return
+        }
+
+        val fallback = filterPool.take(maxVisibleChargers)
+        for (feature in fallback) {
+            if (!discoveredById.containsKey(feature.id)) {
+                discoveredOrder += feature.id
+            }
+            discoveredById[feature.id] = feature
+        }
+        discoveredFeatures = discoveredOrder.mapNotNull { discoveredById[it] }
     }
 
     private fun refreshNearbyAsync(centerLat: Double, centerLon: Double) {
@@ -237,6 +469,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 discoveredById.remove(removedId)
             }
             discoveredFeatures = discoveredOrder.mapNotNull { discoveredById[it] }
+            requestLiveSummaries(nearest.map { it.properties.stationId })
         }
     }
 

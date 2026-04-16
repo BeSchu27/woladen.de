@@ -130,7 +130,7 @@ fun WoladenAppScreen(
                 favoritesStore.toggle(feature.properties.stationId)
             },
             onDismiss = {
-                viewModel.selectedFeature = null
+                viewModel.clearSelectedFeature()
             }
         )
     }

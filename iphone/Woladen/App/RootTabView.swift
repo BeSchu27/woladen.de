@@ -25,8 +25,8 @@ struct RootTabView: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .sheet(item: $viewModel.selectedFeature) { feature in
-            StationDetailView(feature: feature)
+        .sheet(item: selectedFeatureBinding) { feature in
+            StationDetailView(stationID: feature.properties.stationID)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -102,5 +102,18 @@ struct RootTabView: View {
             }
         }
         return keys.sorted { AmenityCatalog.label(for: $0) < AmenityCatalog.label(for: $1) }
+    }
+
+    private var selectedFeatureBinding: Binding<GeoJSONFeature?> {
+        Binding(
+            get: { viewModel.selectedFeature },
+            set: { feature in
+                if let feature {
+                    viewModel.selectFeature(feature)
+                } else {
+                    viewModel.clearSelectedFeature()
+                }
+            }
+        )
     }
 }

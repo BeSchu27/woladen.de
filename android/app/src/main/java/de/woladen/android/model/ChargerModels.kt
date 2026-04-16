@@ -10,7 +10,9 @@ data class GeoJsonFeatureCollection(
 data class GeoJsonFeature(
     val id: String,
     val geometry: GeoJsonPointGeometry,
-    val properties: ChargerProperties
+    val properties: ChargerProperties,
+    val liveSummary: LiveStationSummary? = null,
+    val liveDetail: LiveStationDetail? = null
 ) {
     val latitude: Double get() = geometry.latitude
     val longitude: Double get() = geometry.longitude

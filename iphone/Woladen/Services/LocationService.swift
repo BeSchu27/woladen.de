@@ -17,6 +17,19 @@ final class LocationService: NSObject, ObservableObject {
         authorizationStatus = manager.authorizationStatus
     }
 
+    func activate() {
+        authorizationStatus = manager.authorizationStatus
+        switch authorizationStatus {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways:
+            requestSingleLocation()
+            startUpdates()
+        default:
+            stopUpdates()
+        }
+    }
+
     func requestAuthorization() {
         switch authorizationStatus {
         case .notDetermined:

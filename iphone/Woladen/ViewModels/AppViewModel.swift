@@ -20,11 +20,30 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var activeBundleInfo: ActiveDataBundleInfo?
 
+    private let liveAPIClient = LiveAPIClient()
     private let maxVisibleChargers = 20
+    private let liveRefreshInterval: TimeInterval = 15
+
     private var filterPool: [GeoJSONFeature] = []
     private var discoveredByID: [String: GeoJSONFeature] = [:]
     private var discoveredOrder: [String] = []
     private var didSeedFromUserLocation = false
+
+    private var liveSummaryFetchedAtByStationID: [String: Date] = [:]
+    private var liveDetailFetchedAtByStationID: [String: Date] = [:]
+    private var pendingLiveSummaryStationIDs: Set<String> = []
+    private var pendingLiveDetailStationIDs: Set<String> = []
+    private var liveSummaryRefreshTask: Task<Void, Never>?
+    private var selectedFeatureRefreshTask: Task<Void, Never>?
+
+    init() {
+        startLiveSummaryRefreshLoop()
+    }
+
+    deinit {
+        liveSummaryRefreshTask?.cancel()
+        selectedFeatureRefreshTask?.cancel()
+    }
 
     func load(userLocation: CLLocation?) {
         isLoading = true
@@ -43,18 +62,24 @@ final class AppViewModel: ObservableObject {
                 self.isLoading = false
                 switch result {
                 case .success(let loaded):
+                    self.resetLiveState()
                     self.allFeatures = loaded.features
                     self.operators = loaded.operators
                     self.activeBundleInfo = loaded.bundle
                     self.loadError = nil
                     self.didSeedFromUserLocation = false
                     self.applyFilters(userLocation: userLocation)
+                    Task {
+                        await self.refreshTrackedLiveSummaries(force: true)
+                    }
                 case .failure(let error):
                     self.loadError = error.localizedDescription
                     self.allFeatures = []
                     self.filterPool = []
                     self.discoveredFeatures = []
                     self.operators = []
+                    self.activeBundleInfo = nil
+                    self.resetLiveState()
                 }
             }
         }
@@ -73,6 +98,11 @@ final class AppViewModel: ObservableObject {
         if let userLocation {
             didSeedFromUserLocation = true
             refreshNearby(center: userLocation.coordinate)
+        } else {
+            seedFallbackDiscoveredFeatures()
+            Task {
+                await refreshTrackedLiveSummaries(force: true)
+            }
         }
     }
 
@@ -84,13 +114,27 @@ final class AppViewModel: ObservableObject {
         guard let location else { return }
         guard !allFeatures.isEmpty else { return }
         if !didSeedFromUserLocation {
-            if discoveredFeatures.isEmpty {
-                applyFilters(userLocation: location)
-            } else {
-                refreshNearby(center: location.coordinate)
-            }
-            didSeedFromUserLocation = true
+            // Replace the fallback seed with a real nearby selection once GPS is available.
+            applyFilters(userLocation: location)
         }
+    }
+
+    func selectFeature(_ feature: GeoJSONFeature) {
+        let stationID = feature.properties.stationID
+        selectedFeature = self.feature(forStationID: stationID) ?? feature
+        startSelectedFeatureRefresh(for: stationID)
+    }
+
+    func clearSelectedFeature() {
+        selectedFeature = nil
+        selectedFeatureRefreshTask?.cancel()
+        selectedFeatureRefreshTask = nil
+    }
+
+    func feature(forStationID stationID: String) -> GeoJSONFeature? {
+        allFeatures.first(where: { $0.properties.stationID == stationID })
+            ?? discoveredFeatures.first(where: { $0.properties.stationID == stationID })
+            ?? selectedFeature.flatMap { $0.properties.stationID == stationID ? $0 : nil }
     }
 
     func favoritesFeatures(_ favorites: Set<String>, userLocation: CLLocation?) -> [GeoJSONFeature] {
@@ -101,6 +145,10 @@ final class AppViewModel: ObservableObject {
             }
         }
         return items
+    }
+
+    func refreshFavoritesLiveSummaries(_ favorites: Set<String>, force: Bool = false) async {
+        await requestLiveSummaries(forStationIDs: Array(favorites), force: force)
     }
 
     func distanceText(from userLocation: CLLocation?, to coordinate: CLLocationCoordinate2D) -> String? {
@@ -126,6 +174,171 @@ final class AppViewModel: ObservableObject {
         return "In der App gebündeltes Baseline-Datenbundle"
     }
 
+    func requestLiveDetailIfNeeded(for stationID: String, force: Bool = false) async {
+        let trimmed = stationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard liveAPIClient.isEnabled else { return }
+        guard !pendingLiveDetailStationIDs.contains(trimmed) else { return }
+
+        let now = Date()
+        if !force,
+           let lastFetch = liveDetailFetchedAtByStationID[trimmed],
+           now.timeIntervalSince(lastFetch) < liveRefreshInterval {
+            return
+        }
+
+        pendingLiveDetailStationIDs.insert(trimmed)
+        defer {
+            pendingLiveDetailStationIDs.remove(trimmed)
+        }
+
+        do {
+            let detail = try await liveAPIClient.stationDetail(stationID: trimmed)
+            liveDetailFetchedAtByStationID[trimmed] = now
+            liveSummaryFetchedAtByStationID[trimmed] = now
+            applyLiveDetail(detail, stationID: trimmed)
+        } catch {
+            // Keep offline behavior intact by silently falling back to bundled data.
+        }
+    }
+
+    private func requestLiveSummaries(forStationIDs stationIDs: [String], force: Bool = false) async {
+        guard liveAPIClient.isEnabled else { return }
+
+        let ids = Array(
+            Set(
+                stationIDs
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        )
+        guard !ids.isEmpty else { return }
+
+        let now = Date()
+        let eligibleIDs = ids.filter { stationID in
+            if pendingLiveSummaryStationIDs.contains(stationID) {
+                return false
+            }
+            guard !force else {
+                return true
+            }
+            guard let lastFetch = liveSummaryFetchedAtByStationID[stationID] else {
+                return true
+            }
+            return now.timeIntervalSince(lastFetch) >= liveRefreshInterval
+        }
+        guard !eligibleIDs.isEmpty else { return }
+
+        pendingLiveSummaryStationIDs.formUnion(eligibleIDs)
+        defer {
+            eligibleIDs.forEach { pendingLiveSummaryStationIDs.remove($0) }
+        }
+
+        do {
+            let response = try await liveAPIClient.lookupStations(stationIDs: eligibleIDs)
+            let fetchedAt = Date()
+            let stationIDs = Set(response.stations.map(\.stationID)).union(response.missingStationIDs)
+            stationIDs.forEach { liveSummaryFetchedAtByStationID[$0] = fetchedAt }
+            applyLiveSummaries(response.stations, missingStationIDs: response.missingStationIDs)
+        } catch {
+            // Keep offline behavior intact by silently falling back to bundled data.
+        }
+    }
+
+    private func startLiveSummaryRefreshLoop() {
+        liveSummaryRefreshTask?.cancel()
+        liveSummaryRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await self.refreshTrackedLiveSummaries()
+                try? await Task.sleep(nanoseconds: UInt64(self.liveRefreshInterval * 1_000_000_000))
+            }
+        }
+    }
+
+    private func refreshTrackedLiveSummaries(force: Bool = false) async {
+        await requestLiveSummaries(forStationIDs: trackedStationIDs(), force: force)
+    }
+
+    private func trackedStationIDs() -> [String] {
+        var ids = Set(discoveredFeatures.map { $0.properties.stationID })
+        if let selectedFeature {
+            ids.insert(selectedFeature.properties.stationID)
+        }
+        return Array(ids)
+    }
+
+    private func startSelectedFeatureRefresh(for stationID: String) {
+        selectedFeatureRefreshTask?.cancel()
+        selectedFeatureRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.requestLiveDetailIfNeeded(for: stationID, force: true)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(self.liveRefreshInterval * 1_000_000_000))
+                guard self.selectedFeature?.properties.stationID == stationID else { return }
+                await self.requestLiveDetailIfNeeded(for: stationID, force: true)
+            }
+        }
+    }
+
+    private func applyLiveSummaries(_ summaries: [LiveStationSummary], missingStationIDs: [String]) {
+        let summaryByStationID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.stationID, $0) })
+        let missingIDs = Set(missingStationIDs)
+        let affectedStationIDs = Set(summaryByStationID.keys).union(missingIDs)
+        guard !affectedStationIDs.isEmpty else { return }
+
+        updateFeatureCollections(for: affectedStationIDs) { feature in
+            var updated = feature
+            let stationID = feature.properties.stationID
+            if let summary = summaryByStationID[stationID] {
+                updated.liveSummary = summary
+            } else if missingIDs.contains(stationID) {
+                updated.liveSummary = nil
+            }
+            return updated
+        }
+    }
+
+    private func applyLiveDetail(_ detail: LiveStationDetail, stationID: String) {
+        updateFeatureCollections(for: [stationID]) { feature in
+            var updated = feature
+            updated.liveSummary = detail.station
+            updated.liveDetail = detail
+            return updated
+        }
+    }
+
+    private func updateFeatureCollections(for stationIDs: Set<String>, update: (GeoJSONFeature) -> GeoJSONFeature) {
+        guard !stationIDs.isEmpty else { return }
+        allFeatures = allFeatures.map { feature in
+            stationIDs.contains(feature.properties.stationID) ? update(feature) : feature
+        }
+        filterPool = filterPool.map { feature in
+            stationIDs.contains(feature.properties.stationID) ? update(feature) : feature
+        }
+        discoveredByID = discoveredByID.mapValues { feature in
+            stationIDs.contains(feature.properties.stationID) ? update(feature) : feature
+        }
+        discoveredFeatures = discoveredFeatures.map { feature in
+            stationIDs.contains(feature.properties.stationID) ? update(feature) : feature
+        }
+        if let selectedFeature, stationIDs.contains(selectedFeature.properties.stationID) {
+            self.selectedFeature = update(selectedFeature)
+        }
+    }
+
+    private func updateFeatureCollections(for stationIDs: [String], update: (GeoJSONFeature) -> GeoJSONFeature) {
+        updateFeatureCollections(for: Set(stationIDs), update: update)
+    }
+
+    private func resetLiveState() {
+        liveSummaryFetchedAtByStationID = [:]
+        liveDetailFetchedAtByStationID = [:]
+        pendingLiveSummaryStationIDs = []
+        pendingLiveDetailStationIDs = []
+        clearSelectedFeature()
+    }
+
     private func distance(from userLocation: CLLocation, to coordinate: CLLocationCoordinate2D) -> CLLocationDistance {
         let target = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         return userLocation.distance(from: target)
@@ -141,6 +354,22 @@ final class AppViewModel: ObservableObject {
         discoveredByID = [:]
         discoveredOrder = []
         discoveredFeatures = []
+    }
+
+    private func seedFallbackDiscoveredFeatures() {
+        guard !filterPool.isEmpty else {
+            discoveredFeatures = []
+            return
+        }
+
+        let fallback = Array(filterPool.prefix(maxVisibleChargers))
+        for feature in fallback {
+            if discoveredByID[feature.id] == nil {
+                discoveredOrder.append(feature.id)
+            }
+            discoveredByID[feature.id] = feature
+        }
+        discoveredFeatures = discoveredOrder.compactMap { discoveredByID[$0] }
     }
 
     private func refreshNearby(center: CLLocationCoordinate2D) {
@@ -164,5 +393,9 @@ final class AppViewModel: ObservableObject {
             discoveredByID[feature.id] = feature
         }
         discoveredFeatures = discoveredOrder.compactMap { discoveredByID[$0] }
+
+        Task {
+            await requestLiveSummaries(forStationIDs: nearest.map { $0.properties.stationID })
+        }
     }
 }

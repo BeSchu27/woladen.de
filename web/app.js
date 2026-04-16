@@ -1214,7 +1214,7 @@ function createStationCard(feature) {
   const availabilityStatus = getAvailabilityStatus(p);
 
   // Top Amenities (max 3 badges)
-  const badges = Object.keys(AMENITY_MAPPING)
+  const amenityBadges = Object.keys(AMENITY_MAPPING)
     .filter((k) => p[k] > 0)
     .sort((a, b) => p[b] - p[a]) // Most frequent first
     .slice(0, 3)
@@ -1225,6 +1225,13 @@ function createStationCard(feature) {
     : "";
   const priceBadge = priceDisplay
     ? `<span class="badge badge-price">${escapeHtml(priceDisplay)}</span>`
+    : "";
+  const dynamicBadges = `${liveBadge}${priceBadge}`;
+  const dynamicLine = dynamicBadges
+    ? `<div class="card-badge-line card-badge-line-dynamic">${dynamicBadges}</div>`
+    : "";
+  const amenityLine = amenityBadges
+    ? `<div class="card-badge-line card-badge-line-amenities">${amenityBadges}</div>`
     : "";
 
   const markerColor = getMarkerColor(p);
@@ -1242,7 +1249,7 @@ function createStationCard(feature) {
       ${Math.round(getDisplayedMaxPowerKw(p))} kW max • ${getChargingPointCount(p)} Ladepunkte • ${formatAmenityCount(p.amenities_total)}
     </div>
     <div class="card-badges">
-      ${liveBadge}${priceBadge}${badges}
+      ${dynamicLine}${amenityLine}
     </div>
   `;
 

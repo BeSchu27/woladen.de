@@ -443,6 +443,15 @@ body {
 }
 
 .card-badges {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.card-badges:empty {
+  display: none;
+}
+
+.card-badge-line {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;

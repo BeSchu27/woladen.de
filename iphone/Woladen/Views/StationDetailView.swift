@@ -2,50 +2,60 @@ import SwiftUI
 import MapKit
 
 struct StationDetailView: View {
+    @EnvironmentObject private var viewModel: AppViewModel
     @EnvironmentObject private var favoritesStore: FavoritesStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
-    let feature: GeoJSONFeature
+    let stationID: String
 
-    @State private var cameraPosition: MapCameraPosition
+    @State private var cameraPosition: MapCameraPosition = .region(
+        MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 51.1657, longitude: 10.4515),
+            span: MKCoordinateSpan(latitudeDelta: 7.5, longitudeDelta: 7.5)
+        )
+    )
 
-    init(feature: GeoJSONFeature) {
-        self.feature = feature
-        _cameraPosition = State(initialValue: .region(
-            MKCoordinateRegion(
-                center: feature.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-            )
-        ))
+    private var feature: GeoJSONFeature? {
+        viewModel.feature(forStationID: stationID) ?? viewModel.selectedFeature
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                mapSection
-                VStack(alignment: .leading, spacing: 14) {
-                    headerSection
-                    amenitySection
-                    staticDetailsSection
-                    sourceFooterSection
+        Group {
+            if let feature {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        mapSection(feature)
+                        VStack(alignment: .leading, spacing: 14) {
+                            headerSection(feature)
+                            liveSection(feature)
+                            amenitySection(feature)
+                            staticDetailsSection(feature)
+                            sourceFooterSection(feature)
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 12)
+                        .padding(.bottom, 20)
+                    }
                 }
-                .padding(.horizontal)
-                .padding(.top, 12)
-                .padding(.bottom, 20)
+            } else {
+                ContentUnavailableView("Ladepunkt nicht gefunden", systemImage: "bolt.slash")
             }
         }
         .background(Color(.systemBackground))
         .onAppear(perform: updateRegionToFit)
+        .onChange(of: feature?.id) { _, _ in
+            updateRegionToFit()
+        }
     }
 
-    private var amenityCountLabel: String {
+    private func amenityCountLabel(for feature: GeoJSONFeature) -> String {
         feature.properties.amenitiesTotal == 1 ? "Angebot vor Ort" : "Angebote vor Ort"
     }
 
-    private var mapSection: some View {
+    private func mapSection(_ feature: GeoJSONFeature) -> some View {
         Map(position: $cameraPosition) {
-            ForEach(mapItems) { item in
+            ForEach(mapItems(for: feature)) { item in
                 Annotation("", coordinate: item.coordinate) {
                     if item.isStation {
                         Circle()
@@ -65,6 +75,7 @@ struct StationDetailView: View {
         .frame(height: 260)
         .overlay(alignment: .topLeading) {
             Button {
+                viewModel.clearSelectedFeature()
                 dismiss()
             } label: {
                 Label("", systemImage: "chevron.backward")
@@ -78,8 +89,8 @@ struct StationDetailView: View {
         }
     }
 
-    private var headerSection: some View {
-        let occupancy = feature.properties.occupancySummaryLabel
+    private func headerSection(_ feature: GeoJSONFeature) -> some View {
+        let occupancy = feature.occupancySummaryLabel
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
@@ -98,10 +109,10 @@ struct StationDetailView: View {
                 }
             }
 
-            if feature.properties.hasPrimaryDetailHighlights {
+            if feature.hasPrimaryDetailHighlights {
                 HStack(spacing: 8) {
-                    if !feature.properties.priceDisplay.isEmpty {
-                        detailChip(text: feature.properties.priceDisplay, systemImage: "eurosign")
+                    if !feature.displayPrice.isEmpty {
+                        detailChip(text: feature.displayPrice, systemImage: "eurosign")
                     }
                     if !feature.properties.openingHoursDisplay.isEmpty {
                         detailChip(text: feature.properties.openingHoursDisplay, systemImage: "clock")
@@ -123,29 +134,32 @@ struct StationDetailView: View {
                 if let occupancy {
                     detailStatCard(
                         text: occupancy,
-                        systemImage: "dot.radiowaves.left.and.right"
+                        systemImage: "dot.radiowaves.left.and.right",
+                        tint: statusColor(for: feature.availabilityStatus)
                     )
                 }
             }
 
             HStack(spacing: 6) {
                 Button {
-                    openNavigationLink(google: true)
+                    openNavigationLink(feature, google: true)
                 } label: {
                     actionButtonLabel("Google", systemImage: "location.north.line.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .frame(maxWidth: .infinity, minHeight: 50)
+
                 Button {
-                    openNavigationLink(google: false)
+                    openNavigationLink(feature, google: false)
                 } label: {
                     actionButtonLabel("Apple", systemImage: "location.north.line.fill")
                 }
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity, minHeight: 50)
+
                 if !feature.properties.helpdeskPhone.isEmpty {
                     Button {
-                        openHelpdeskPhone()
+                        openHelpdeskPhone(feature)
                     } label: {
                         actionButtonLabel("Hilfe", systemImage: "phone.fill")
                     }
@@ -157,9 +171,72 @@ struct StationDetailView: View {
         }
     }
 
-    private var amenitySection: some View {
+    @ViewBuilder
+    private func liveSection(_ feature: GeoJSONFeature) -> some View {
+        let rows = feature.liveEVSERows
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Live")
+                    .font(.headline)
+
+                if let updated = feature.liveUpdatedLabel {
+                    Text(updated)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let source = feature.occupancySourceLabel, !source.isEmpty {
+                    Text(source)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(rows) { row in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .top, spacing: 10) {
+                            Text(row.title)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            statusPill(status: row.status)
+                        }
+
+                        HStack(alignment: .top, spacing: 10) {
+                            Text(row.meta)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            if !row.price.isEmpty {
+                                Text(row.price)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color.green)
+                            }
+                        }
+
+                        if !row.notes.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(row.notes) { note in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(note.label)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                        Text(note.value)
+                                            .font(.caption)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+    }
+
+    private func amenitySection(_ feature: GeoJSONFeature) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("In der Nähe: \(feature.properties.amenitiesTotal) \(amenityCountLabel)")
+            Text("In der Nähe: \(feature.properties.amenitiesTotal) \(amenityCountLabel(for: feature))")
                 .font(.headline)
 
             if feature.properties.amenityExamples.isEmpty {
@@ -174,7 +251,7 @@ struct StationDetailView: View {
     }
 
     @ViewBuilder
-    private var staticDetailsSection: some View {
+    private func staticDetailsSection(_ feature: GeoJSONFeature) -> some View {
         let rows = feature.properties.staticDetailRows
         let source = feature.properties.detailSourceLabel
         if !rows.isEmpty || source != nil {
@@ -223,7 +300,7 @@ struct StationDetailView: View {
         }
     }
 
-    private var mapItems: [MapPoint] {
+    private func mapItems(for feature: GeoJSONFeature) -> [MapPoint] {
         var items: [MapPoint] = [
             .init(id: "station", coordinate: feature.coordinate, symbol: "bolt.fill", isStation: true)
         ]
@@ -242,7 +319,8 @@ struct StationDetailView: View {
     }
 
     private func updateRegionToFit() {
-        let coordinates = mapItems.map(\.coordinate)
+        guard let feature else { return }
+        let coordinates = mapItems(for: feature).map(\.coordinate)
         guard let first = coordinates.first else { return }
         var minLat = first.latitude
         var maxLat = first.latitude
@@ -279,7 +357,7 @@ struct StationDetailView: View {
         return parts.isEmpty ? "" : parts.joined(separator: " • ")
     }
 
-    private func openNavigationLink(google: Bool) {
+    private func openNavigationLink(_ feature: GeoJSONFeature, google: Bool) {
         let lat = feature.coordinate.latitude
         let lon = feature.coordinate.longitude
         let urlString = google
@@ -289,7 +367,7 @@ struct StationDetailView: View {
         openURL(url)
     }
 
-    private func openHelpdeskPhone() {
+    private func openHelpdeskPhone(_ feature: GeoJSONFeature) {
         let digits = feature.properties.helpdeskPhone.filter { "+0123456789".contains($0) }
         guard let url = URL(string: "tel:\(digits)") else { return }
         openURL(url)
@@ -305,31 +383,52 @@ struct StationDetailView: View {
     }
 
     @ViewBuilder
-    private var sourceFooterSection: some View {
-        if let occupancySource = feature.properties.occupancySourceLabel, !occupancySource.isEmpty {
+    private func sourceFooterSection(_ feature: GeoJSONFeature) -> some View {
+        if feature.liveEVSERows.isEmpty, let occupancySource = feature.occupancySourceLabel, !occupancySource.isEmpty {
             Text(occupancySource)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    private func detailStatCard(text: String, systemImage: String) -> some View {
+    private func detailStatCard(text: String, systemImage: String, tint: Color = .primary) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(text, systemImage: systemImage)
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(Color.primary)
+                .foregroundStyle(tint)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .padding(.horizontal, 12)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func actionButtonLabel(_ text: String, systemImage: String) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.subheadline.weight(.semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.85)
+    private func actionButtonLabel(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .frame(maxWidth: .infinity)
+    }
+
+    private func statusPill(status: AvailabilityStatus) -> some View {
+        Text(status.label)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(statusColor(for: status).opacity(0.16), in: Capsule())
+            .foregroundStyle(statusColor(for: status))
+    }
+
+    private func statusColor(for status: AvailabilityStatus) -> Color {
+        switch status {
+        case .free:
+            return Color.teal
+        case .occupied:
+            return Color.orange
+        case .outOfOrder:
+            return Color.red
+        case .unknown:
+            return Color.secondary
+        }
     }
 }
 

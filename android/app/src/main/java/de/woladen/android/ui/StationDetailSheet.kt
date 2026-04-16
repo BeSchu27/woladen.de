@@ -37,13 +37,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import de.woladen.android.model.AmenityExample
+import de.woladen.android.model.AvailabilityStatus
 import de.woladen.android.model.DetailRow
 import de.woladen.android.model.GeoJsonFeature
+import de.woladen.android.model.LiveDetailNote
+import de.woladen.android.model.LiveEvseRow
+import de.woladen.android.model.availabilityStatus
+import de.woladen.android.model.displayPrice
+import de.woladen.android.model.hasPrimaryDetailHighlights
+import de.woladen.android.model.liveEvseRows
+import de.woladen.android.model.liveUpdatedLabel
+import de.woladen.android.model.occupancySourceLabel
+import de.woladen.android.model.occupancySummaryLabel
 import de.woladen.android.ui.components.AmenityIcon
 import de.woladen.android.ui.components.DetailMapPoint
 import de.woladen.android.ui.components.DetailMiniMapView
@@ -125,11 +136,11 @@ fun StationDetailSheet(
                     }
                 }
 
-                if (feature.properties.hasPrimaryDetailHighlights) {
+                if (feature.hasPrimaryDetailHighlights) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (feature.properties.priceDisplay.isNotBlank()) {
+                        if (feature.displayPrice.isNotBlank()) {
                             DetailChip(
-                                text = feature.properties.priceDisplay,
+                                text = feature.displayPrice,
                                 symbol = "€"
                             )
                         }
@@ -157,10 +168,11 @@ fun StationDetailSheet(
                         text = "${feature.properties.displayedMaxPowerKw.toInt()} kW max / ${feature.properties.chargingPointsCount} Ladepunkte",
                         modifier = Modifier.weight(1f)
                     )
-                    feature.properties.occupancySummaryLabel?.let { occupancy ->
+                    feature.occupancySummaryLabel?.let { occupancy ->
                         SummaryStatCard(
                             text = occupancy,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            tint = availabilityColor(feature.availabilityStatus)
                         )
                     }
                 }
@@ -203,6 +215,27 @@ fun StationDetailSheet(
                     }
                 }
 
+                if (feature.liveEvseRows.isNotEmpty()) {
+                    Text("Live", style = MaterialTheme.typography.titleMedium)
+                    feature.liveUpdatedLabel?.let { updated ->
+                        Text(
+                            updated,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    feature.occupancySourceLabel?.takeIf { it.isNotBlank() }?.let { source ->
+                        Text(
+                            source,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    for (row in feature.liveEvseRows) {
+                        LiveEvseRowCard(row)
+                    }
+                }
+
                 Text(
                     "In der Nähe: ${feature.properties.amenitiesTotal} ${formatAmenityCountLabel(feature.properties.amenitiesTotal)}",
                     style = MaterialTheme.typography.titleMedium
@@ -229,12 +262,14 @@ fun StationDetailSheet(
                     }
                 }
 
-                feature.properties.occupancySourceLabel?.takeIf { it.isNotBlank() }?.let { source ->
-                    Text(
-                        source,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                if (feature.liveEvseRows.isEmpty()) {
+                    feature.occupancySourceLabel?.takeIf { it.isNotBlank() }?.let { source ->
+                        Text(
+                            source,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -247,7 +282,8 @@ private fun formatAmenityCountLabel(count: Int): String =
 @Composable
 private fun SummaryStatCard(
     text: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    tint: Color = MaterialTheme.colorScheme.onSurface
 ) {
     OutlinedCard(modifier = modifier) {
         Column(
@@ -258,8 +294,8 @@ private fun SummaryStatCard(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Outlined.Info, contentDescription = null)
-                Text(text, style = MaterialTheme.typography.bodyMedium)
+                Icon(Icons.Outlined.Info, contentDescription = null, tint = tint)
+                Text(text, style = MaterialTheme.typography.bodyMedium, color = tint)
             }
         }
     }
@@ -276,6 +312,76 @@ private fun DetailChip(text: String, symbol: String) {
             Text(symbol)
             Text(text, style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+@Composable
+private fun LiveEvseRowCard(row: LiveEvseRow) {
+    OutlinedCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = row.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                StatusPill(status = row.status)
+            }
+
+            Row(verticalAlignment = Alignment.Top) {
+                Text(
+                    text = row.meta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                if (row.price.isNotBlank()) {
+                    Text(
+                        text = row.price,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF15803D)
+                    )
+                }
+            }
+
+            if (row.notes.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (note in row.notes) {
+                        LiveNote(note)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveNote(note: LiveDetailNote) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            note.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(note.value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun StatusPill(status: AvailabilityStatus) {
+    val color = availabilityColor(status)
+    OutlinedCard {
+        Text(
+            text = status.label,
+            color = color,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+        )
     }
 }
 
@@ -335,6 +441,15 @@ private fun DetailInfoRow(row: DetailRow) {
                 modifier = Modifier.weight(0.68f)
             )
         }
+    }
+}
+
+private fun availabilityColor(status: AvailabilityStatus): Color {
+    return when (status) {
+        AvailabilityStatus.FREE -> Color(0xFF0F766E)
+        AvailabilityStatus.OCCUPIED -> Color(0xFFB45309)
+        AvailabilityStatus.OUT_OF_ORDER -> Color(0xFFB91C1C)
+        AvailabilityStatus.UNKNOWN -> Color.Gray
     }
 }
 
