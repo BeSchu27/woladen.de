@@ -89,6 +89,24 @@ def test_load_subscription_offers_includes_static_dynamic_noauth_and_model_other
 def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noauth_behavior():
     offers = [
         SubscriptionOffer(
+            provider_uid="edri",
+            display_name="edri",
+            publisher="Аmpeco Ltd.",
+            publication_id="972842599324557312",
+            offer_title="AFIR-recharging-dyn-EDRI",
+            feed_kind="dynamic",
+            access_mode="auth",
+        ),
+        SubscriptionOffer(
+            provider_uid="edri",
+            display_name="edri",
+            publisher="Аmpeco Ltd.",
+            publication_id="972837891969273856",
+            offer_title="AFIR-recharging-stat-EDRI",
+            feed_kind="static",
+            access_mode="auth",
+        ),
+        SubscriptionOffer(
             provider_uid="eco_movement",
             display_name="eco movement",
             publisher="Eco-Movement",
@@ -147,6 +165,8 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
     registry = build_live_subscription_registry(
         offers,
         [
+            {"id": "980986189821227008", "dataOfferId": "972842599324557312", "contractStatus": "ACTIVE"},
+            {"id": "980986204027498496", "dataOfferId": "972837891969273856", "contractStatus": "ACTIVE"},
             {"id": "980986321979551744", "dataOfferId": "955166494396665856", "contractStatus": "ACTIVE"},
             {"id": "980986232691372032", "dataOfferId": "970388804493828096", "contractStatus": "ACTIVE"},
             {"id": "980986244745637888", "dataOfferId": "970305056590979072", "contractStatus": "ACTIVE"},
@@ -155,6 +175,11 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
             {"id": "980986256821039104", "dataOfferId": "969322788846231552", "contractStatus": "ACTIVE"},
         ],
     )
+
+    assert registry["edri"]["subscription_id"] == "980986189821227008"
+    assert registry["edri"]["static_subscription_id"] == "980986204027498496"
+    assert registry["edri"]["fetch_kind"] == "mtls_subscription"
+    assert registry["edri"]["enabled"] is True
 
     assert registry["eco_movement"]["subscription_id"] == "980986321979551744"
     assert registry["eco_movement"]["fetch_kind"] == "mtls_subscription"

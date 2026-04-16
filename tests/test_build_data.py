@@ -335,6 +335,92 @@ def test_parse_datex_static_sites_supports_ladenetz_xml_payload():
     assert sites[0].total_evses == 2
 
 
+def test_parse_datex_static_sites_supports_message_container_wrapper():
+    payload = {
+        "messageContainer": {
+            "payload": [
+                {
+                    "aegiEnergyInfrastructureTablePublication": {
+                        "energyInfrastructureTable": [
+                            {
+                                "energyInfrastructureSite": [
+                                    {
+                                        "idG": "1302",
+                                        "name": {"values": [{"lang": "de", "value": "Workspace A81 - New Office"}]},
+                                        "locationReference": {
+                                            "locPointLocation": {
+                                                "pointByCoordinates": {
+                                                    "pointCoordinates": {
+                                                        "latitude": 51.4346197,
+                                                        "longitude": 7.002928,
+                                                    }
+                                                },
+                                                "locLocationExtensionG": {
+                                                    "facilityLocation": {
+                                                        "address": {
+                                                            "postcode": "45130",
+                                                            "city": {"values": [{"lang": "de", "value": "Essen"}]},
+                                                            "addressLine": [
+                                                                {
+                                                                    "order": 0,
+                                                                    "type": {"value": "street"},
+                                                                    "text": {
+                                                                        "values": [
+                                                                            {"lang": "de", "value": "Alfredstraße 81"}
+                                                                        ]
+                                                                    },
+                                                                }
+                                                            ],
+                                                        }
+                                                    }
+                                                },
+                                            }
+                                        },
+                                        "energyInfrastructureStation": [
+                                            {
+                                                "idG": "7234",
+                                                "numberOfRefillPoints": 2,
+                                                "operator": {
+                                                    "afacAnOrganisation": {
+                                                        "name": {
+                                                            "values": [
+                                                                {
+                                                                    "lang": "de",
+                                                                    "value": "E.ON Drive Infrastructure GmbH",
+                                                                }
+                                                            ]
+                                                        }
+                                                    }
+                                                },
+                                                "refillPoint": [
+                                                    {"aegiElectricChargingPoint": {"idG": "DE*UFC*E00159*1"}},
+                                                    {"aegiElectricChargingPoint": {"idG": "DE*UFC*E00159*2"}},
+                                                ],
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+
+    sites = build_data.parse_datex_static_sites(payload)
+
+    assert len(sites) == 1
+    assert sites[0].site_id == "1302"
+    assert sites[0].station_ids == ("7234",)
+    assert sites[0].evse_ids == ("DEUFCE001591", "DEUFCE001592")
+    assert sites[0].postcode == "45130"
+    assert sites[0].city == "Essen"
+    assert sites[0].address == "Alfredstraße 81"
+    assert sites[0].operator_name == "E.ON Drive Infrastructure GmbH"
+    assert sites[0].total_evses == 2
+
+
 def test_parse_datex_dynamic_states_supports_ladenetz_xml_payload():
     payload = build_data.decode_json_bytes(_ladenetz_dynamic_xml_payload())
 
