@@ -29,15 +29,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.build_data import (
-    decode_json_bytes,
     fetch_mobilithek_access_token,
+    fetch_mobilithek_static_payload_with_probe as fetch_datex_payload_with_probe,
     haversine_distance_m,
+    load_static_subscription_ids,
     normalize_text,
     parse_datex_static_sites,
     parse_datex_dynamic_states,
 )
 
 DATA_DIR = REPO_ROOT / "data"
+SUBSCRIPTION_REGISTRY_PATH = REPO_ROOT / "secret" / "mobilithek_subscriptions.json"
 CHARGING_DATA_CATEGORY = "https://w3id.org/mdp/schema/data_categories#FILLING_AND_CHARGING_STATIONS"
 METADATA_SEARCH_URL = "https://mobilithek.info/mdp-api/mdp-msa-metadata/v2/offers/search"
 METADATA_OFFER_URL = "https://mobilithek.info/mdp-api/mdp-msa-metadata/v2/offers/{publication_id}"
@@ -542,42 +544,15 @@ def fetch_static_payload_with_probe(
     publication_id: str,
     preferred_access_mode: str,
     access_token: str | None,
-) -> tuple[dict[str, Any] | None, str, str | None]:
-    attempts: list[tuple[str, bool]] = []
-    if preferred_access_mode == "auth":
-        attempts.append(("auth", True))
-        attempts.append(("noauth", False))
-    else:
-        attempts.append(("noauth", False))
-        attempts.append(("auth", True))
-
-    last_error: str | None = None
-    for mode_name, requires_auth in attempts:
-        try:
-            url = (
-                PUBLICATION_FILE_URL.format(publication_id=publication_id)
-                if requires_auth
-                else PUBLICATION_PUBLIC_FILE_URL.format(publication_id=publication_id)
-            )
-            headers = {"Accept": "application/octet-stream"}
-            if requires_auth:
-                if not access_token:
-                    raise RuntimeError("missing_mobilithek_access_token")
-                headers["Authorization"] = f"Bearer {access_token}"
-
-            response = session.get(
-                url,
-                headers=headers,
-                timeout=PUBLICATION_TIMEOUT_SECONDS,
-                verify=False,
-            )
-            response.raise_for_status()
-            payload = decode_json_bytes(response.content)
-            return payload, mode_name, None
-        except Exception as exc:  # requests/HTTP/runtime parsing failures are all reportable here
-            last_error = f"{mode_name}: {exc}"
-
-    return None, preferred_access_mode, last_error
+    subscription_id: str = "",
+) -> tuple[dict[str, Any] | list[Any] | None, str, str | None]:
+    return fetch_datex_payload_with_probe(
+        session,
+        publication_id=publication_id,
+        preferred_access_mode=preferred_access_mode,
+        access_token=access_token,
+        subscription_id=subscription_id,
+    )
 
 
 def read_optional_text(path: Path | None) -> str | None:
@@ -585,6 +560,22 @@ def read_optional_text(path: Path | None) -> str | None:
         return None
     value = path.read_text(encoding="utf-8").strip()
     return value or None
+
+
+def load_dynamic_subscription_ids(
+    path: Path = SUBSCRIPTION_REGISTRY_PATH,
+) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    subscription_ids: dict[str, str] = {}
+    for provider_uid, entry in payload.items():
+        if not isinstance(entry, dict):
+            continue
+        subscription_id = str(entry.get("subscription_id") or "").strip()
+        if subscription_id:
+            subscription_ids[str(provider_uid).strip()] = subscription_id
+    return subscription_ids
 
 
 def probe_publication_file_access(
@@ -811,6 +802,15 @@ def main() -> None:
     except Exception:
         access_token = None
 
+    try:
+        dynamic_subscription_ids = load_dynamic_subscription_ids()
+    except Exception:
+        dynamic_subscription_ids = {}
+    try:
+        static_subscription_ids = load_static_subscription_ids()
+    except Exception:
+        static_subscription_ids = {}
+
     detailed_offers: list[dict[str, Any]] = []
     for offer in charging_offers:
         publication_id = str(offer.get("publicationId") or "").strip()
@@ -923,6 +923,7 @@ def main() -> None:
                 publication_id=str(static_feed["publication_id"]),
                 preferred_access_mode=str(static_feed["access_mode"]),
                 access_token=access_token,
+                subscription_id=static_subscription_ids.get(provider_uid, ""),
             )
 
             if payload is None:
@@ -982,6 +983,7 @@ def main() -> None:
                 publication_id=str(dynamic_feed["publication_id"]),
                 preferred_access_mode=str(dynamic_feed["access_mode"]),
                 access_token=access_token,
+                subscription_id=dynamic_subscription_ids.get(provider_uid, ""),
             )
             dynamic_coverage = summarize_dynamic_probe(
                 payload=payload,

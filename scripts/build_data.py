@@ -673,12 +673,23 @@ def _reference_id(value: Any) -> str:
 
 
 def _datex_publication_root(payload: dict[str, Any]) -> dict[str, Any]:
+    message_container = payload.get("messageContainer")
+    message_payload = message_container.get("payload") if isinstance(message_container, dict) else None
     candidates: list[Any] = [
+        ((message_payload or {}).get("aegiEnergyInfrastructureTablePublication"))
+        if isinstance(message_payload, dict)
+        else None,
         ((payload.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication")),
         payload.get("aegiEnergyInfrastructureTablePublication"),
+        message_payload,
         payload.get("payload"),
         payload,
     ]
+    if isinstance(message_payload, list):
+        for item in message_payload:
+            if isinstance(item, dict):
+                candidates.append(item.get("aegiEnergyInfrastructureTablePublication"))
+                candidates.append(item)
     for candidate in candidates:
         if isinstance(candidate, dict) and candidate.get("energyInfrastructureTable"):
             return candidate
