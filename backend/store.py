@@ -148,7 +148,11 @@ class LiveStore:
                     error_text TEXT NOT NULL DEFAULT '',
                     payload_sha256 TEXT NOT NULL DEFAULT '',
                     observation_count INTEGER NOT NULL DEFAULT 0,
-                    changed_observation_count INTEGER NOT NULL DEFAULT 0
+                    mapped_observation_count INTEGER NOT NULL DEFAULT 0,
+                    dropped_observation_count INTEGER NOT NULL DEFAULT 0,
+                    changed_observation_count INTEGER NOT NULL DEFAULT 0,
+                    changed_mapped_observation_count INTEGER NOT NULL DEFAULT 0,
+                    changed_dropped_observation_count INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS provider_push_runs (
@@ -167,7 +171,11 @@ class LiveStore:
                     error_text TEXT NOT NULL DEFAULT '',
                     payload_sha256 TEXT NOT NULL DEFAULT '',
                     observation_count INTEGER NOT NULL DEFAULT 0,
-                    changed_observation_count INTEGER NOT NULL DEFAULT 0
+                    mapped_observation_count INTEGER NOT NULL DEFAULT 0,
+                    dropped_observation_count INTEGER NOT NULL DEFAULT 0,
+                    changed_observation_count INTEGER NOT NULL DEFAULT 0,
+                    changed_mapped_observation_count INTEGER NOT NULL DEFAULT 0,
+                    changed_dropped_observation_count INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS evse_current_state (
@@ -222,6 +230,7 @@ class LiveStore:
                 """
             )
             self._ensure_provider_columns(conn)
+            self._ensure_run_columns(conn)
             self._ensure_live_state_columns(conn)
             dropped_legacy_history = self._drop_legacy_observation_storage(conn)
         if dropped_legacy_history:
@@ -264,6 +273,16 @@ class LiveStore:
         ]
         self._ensure_table_columns(conn, "evse_current_state", additions)
         self._migrate_live_state_price_columns(conn)
+
+    def _ensure_run_columns(self, conn: sqlite3.Connection) -> None:
+        additions = [
+            ("mapped_observation_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("dropped_observation_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("changed_mapped_observation_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("changed_dropped_observation_count", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        self._ensure_table_columns(conn, "provider_poll_runs", additions)
+        self._ensure_table_columns(conn, "provider_push_runs", additions)
 
     def _live_state_table_needs_price_migration(self, conn: sqlite3.Connection, table_name: str) -> bool:
         column_types = {
@@ -659,6 +678,120 @@ class LiveStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_recent_provider_updates(self, *, limit_per_provider: int = 10) -> dict[str, list[dict[str, Any]]]:
+        updates_by_provider: dict[str, list[dict[str, Any]]] = {}
+        if limit_per_provider <= 0:
+            return updates_by_provider
+
+        with self.connection() as conn:
+            poll_rows = conn.execute(
+                """
+                SELECT
+                    provider_uid,
+                    started_at,
+                    ended_at,
+                    fetched_at,
+                    result,
+                    http_status,
+                    error_text,
+                    payload_sha256,
+                    observation_count,
+                    mapped_observation_count,
+                    dropped_observation_count,
+                    changed_observation_count,
+                    changed_mapped_observation_count,
+                    changed_dropped_observation_count
+                FROM provider_poll_runs
+                WHERE result <> 'started'
+                """
+            ).fetchall()
+            push_rows = conn.execute(
+                """
+                SELECT
+                    provider_uid,
+                    subscription_id,
+                    publication_id,
+                    started_at,
+                    ended_at,
+                    received_at,
+                    result,
+                    error_text,
+                    payload_sha256,
+                    observation_count,
+                    mapped_observation_count,
+                    dropped_observation_count,
+                    changed_observation_count,
+                    changed_mapped_observation_count,
+                    changed_dropped_observation_count
+                FROM provider_push_runs
+                WHERE result <> 'started'
+                """
+            ).fetchall()
+
+        normalized_by_provider: dict[str, list[dict[str, Any]]] = {}
+        for row in poll_rows:
+            provider_uid = str(row["provider_uid"])
+            normalized_by_provider.setdefault(provider_uid, []).append(
+                {
+                    "update_kind": "poll",
+                    "update_at": str(row["fetched_at"] or row["started_at"] or "") or None,
+                    "started_at": str(row["started_at"] or "") or None,
+                    "ended_at": str(row["ended_at"] or "") or None,
+                    "fetched_at": str(row["fetched_at"] or "") or None,
+                    "received_at": None,
+                    "subscription_id": None,
+                    "publication_id": None,
+                    "result": str(row["result"] or ""),
+                    "http_status": int(row["http_status"]) if row["http_status"] is not None else None,
+                    "error_text": str(row["error_text"] or "") or None,
+                    "payload_sha256": str(row["payload_sha256"] or "") or None,
+                    "observation_count": int(row["observation_count"] or 0),
+                    "mapped_observation_count": int(row["mapped_observation_count"] or 0),
+                    "dropped_observation_count": int(row["dropped_observation_count"] or 0),
+                    "changed_observation_count": int(row["changed_observation_count"] or 0),
+                    "changed_mapped_observation_count": int(row["changed_mapped_observation_count"] or 0),
+                    "changed_dropped_observation_count": int(row["changed_dropped_observation_count"] or 0),
+                }
+            )
+
+        for row in push_rows:
+            provider_uid = str(row["provider_uid"])
+            normalized_by_provider.setdefault(provider_uid, []).append(
+                {
+                    "update_kind": "push",
+                    "update_at": str(row["received_at"] or row["started_at"] or "") or None,
+                    "started_at": str(row["started_at"] or "") or None,
+                    "ended_at": str(row["ended_at"] or "") or None,
+                    "fetched_at": None,
+                    "received_at": str(row["received_at"] or "") or None,
+                    "subscription_id": str(row["subscription_id"] or "") or None,
+                    "publication_id": str(row["publication_id"] or "") or None,
+                    "result": str(row["result"] or ""),
+                    "http_status": None,
+                    "error_text": str(row["error_text"] or "") or None,
+                    "payload_sha256": str(row["payload_sha256"] or "") or None,
+                    "observation_count": int(row["observation_count"] or 0),
+                    "mapped_observation_count": int(row["mapped_observation_count"] or 0),
+                    "dropped_observation_count": int(row["dropped_observation_count"] or 0),
+                    "changed_observation_count": int(row["changed_observation_count"] or 0),
+                    "changed_mapped_observation_count": int(row["changed_mapped_observation_count"] or 0),
+                    "changed_dropped_observation_count": int(row["changed_dropped_observation_count"] or 0),
+                }
+            )
+
+        for provider_uid, items in normalized_by_provider.items():
+            items.sort(
+                key=lambda item: (
+                    str(item.get("update_at") or ""),
+                    str(item.get("started_at") or ""),
+                    str(item.get("update_kind") or ""),
+                ),
+                reverse=True,
+            )
+            updates_by_provider[provider_uid] = items[:limit_per_provider]
+
+        return updates_by_provider
+
     def get_next_provider_for_round_robin(self) -> dict[str, Any] | None:
         now = utc_now_iso()
         with self.connection() as conn:
@@ -786,7 +919,11 @@ class LiveStore:
         error_text: str = "",
         payload_sha256: str = "",
         observation_count: int = 0,
+        mapped_observation_count: int = 0,
+        dropped_observation_count: int = 0,
         changed_observation_count: int = 0,
+        changed_mapped_observation_count: int = 0,
+        changed_dropped_observation_count: int = 0,
     ) -> None:
         ended_text = ended_at or utc_now_iso()
         with self.connection() as conn:
@@ -802,7 +939,9 @@ class LiveStore:
                 """
                 UPDATE provider_poll_runs
                 SET ended_at = ?, fetched_at = ?, result = ?, http_status = ?, error_text = ?,
-                    payload_sha256 = ?, observation_count = ?, changed_observation_count = ?
+                    payload_sha256 = ?, observation_count = ?, mapped_observation_count = ?,
+                    dropped_observation_count = ?, changed_observation_count = ?,
+                    changed_mapped_observation_count = ?, changed_dropped_observation_count = ?
                 WHERE id = ?
                 """,
                 (
@@ -813,7 +952,11 @@ class LiveStore:
                     error_text,
                     payload_sha256,
                     observation_count,
+                    mapped_observation_count,
+                    dropped_observation_count,
                     changed_observation_count,
+                    changed_mapped_observation_count,
+                    changed_dropped_observation_count,
                     poll_run_id,
                 ),
             )
@@ -849,7 +992,11 @@ class LiveStore:
         error_text: str = "",
         payload_sha256: str = "",
         observation_count: int = 0,
+        mapped_observation_count: int = 0,
+        dropped_observation_count: int = 0,
         changed_observation_count: int = 0,
+        changed_mapped_observation_count: int = 0,
+        changed_dropped_observation_count: int = 0,
     ) -> None:
         ended_text = ended_at or utc_now_iso()
         with self.connection() as conn:
@@ -857,7 +1004,9 @@ class LiveStore:
                 """
                 UPDATE provider_push_runs
                 SET ended_at = ?, received_at = ?, result = ?, error_text = ?, payload_sha256 = ?,
-                    observation_count = ?, changed_observation_count = ?
+                    observation_count = ?, mapped_observation_count = ?, dropped_observation_count = ?,
+                    changed_observation_count = ?, changed_mapped_observation_count = ?,
+                    changed_dropped_observation_count = ?
                 WHERE id = ?
                 """,
                 (
@@ -867,7 +1016,11 @@ class LiveStore:
                     error_text,
                     payload_sha256,
                     observation_count,
+                    mapped_observation_count,
+                    dropped_observation_count,
                     changed_observation_count,
+                    changed_mapped_observation_count,
+                    changed_dropped_observation_count,
                     push_run_id,
                 ),
             )
@@ -1080,9 +1233,13 @@ class LiveStore:
         fetched_at: str,
         payload_bytes: bytes,
         content_type: str,
-    ) -> tuple[str, int, int]:
+    ) -> dict[str, Any]:
         ingested_at = utc_now_iso()
+        mapped_count = 0
+        dropped_count = 0
         changed_count = 0
+        changed_mapped_count = 0
+        changed_dropped_count = 0
         affected_station_ids: set[str] = set()
 
         with self.connection() as conn:
@@ -1098,11 +1255,20 @@ class LiveStore:
                     (provider_uid, fact.evse_id),
                 ).fetchone()
                 changed_since_previous = 1 if self._state_signature(current_row) != self._fact_signature(fact) else 0
+                previous_station_id = str(current_row["station_id"] or "").strip() if current_row else ""
                 changed_count += changed_since_previous
                 station_id = fact.station_id or ""
                 if station_id:
+                    mapped_count += 1
                     affected_station_ids.add(station_id)
-
+                    if changed_since_previous:
+                        changed_mapped_count += 1
+                else:
+                    dropped_count += 1
+                    if changed_since_previous:
+                        changed_dropped_count += 1
+                if previous_station_id and previous_station_id != station_id:
+                    affected_station_ids.add(previous_station_id)
                 conn.execute(
                     """
                     INSERT INTO evse_current_state (
@@ -1154,7 +1320,15 @@ class LiveStore:
             for station_id in affected_station_ids:
                 self._refresh_station_current_state(conn, station_id)
 
-        return payload_sha256, len(facts), changed_count
+        return {
+            "payload_sha256": payload_sha256,
+            "observation_count": len(facts),
+            "mapped_observation_count": mapped_count,
+            "dropped_observation_count": dropped_count,
+            "changed_observation_count": changed_count,
+            "changed_mapped_observation_count": changed_mapped_count,
+            "changed_dropped_observation_count": changed_dropped_count,
+        }
 
     def _refresh_station_current_state(self, conn: sqlite3.Connection, station_id: str) -> None:
         rows = conn.execute(

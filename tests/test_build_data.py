@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import json
 import sys
@@ -18,6 +19,109 @@ def _load_build_data_module():
 
 
 build_data = _load_build_data_module()
+
+
+def _ladenetz_static_xml_payload() -> bytes:
+    payload = """<?xml version="1.0" encoding="UTF-8"?>
+<ns2:d2Payload
+    xmlns="http://datex2.eu/schema/3/common"
+    xmlns:ns1="http://datex2.eu/schema/3/facilities"
+    xmlns:ns2="http://datex2.eu/schema/3/d2Payload"
+    xmlns:ns3="http://datex2.eu/schema/3/energyInfrastructure"
+    xmlns:ns10="http://datex2.eu/schema/3/locationExtension">
+  <ns2:payload xsi:type="ns3:EnergyInfrastructureTablePublication" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <ns2:publicationTime>2026-04-16T00:00:00Z</ns2:publicationTime>
+    <ns3:energyInfrastructureTable id="table-1">
+      <ns3:energyInfrastructureSite id="DESTA">
+        <ns1:locationReference xsi:type="ns1:PointLocation">
+          <ns1:coordinatesForDisplay>
+            <ns1:latitude>50.756725</ns1:latitude>
+            <ns1:longitude>6.150348</ns1:longitude>
+          </ns1:coordinatesForDisplay>
+          <ns1:pointByCoordinates>
+            <ns1:pointCoordinates>
+              <ns1:latitude>50.756725</ns1:latitude>
+              <ns1:longitude>6.150348</ns1:longitude>
+            </ns1:pointCoordinates>
+          </ns1:pointByCoordinates>
+          <ns10:_locationReferenceExtension>
+            <ns10:facilityLocation>
+              <ns10:address>
+                <ns10:postcode>52078</ns10:postcode>
+                <ns10:city>
+                  <ns10:values>
+                    <ns10:value lang="de">Aachen</ns10:value>
+                  </ns10:values>
+                </ns10:city>
+                <ns10:addressLine order="1" type="street">
+                  <ns10:text>
+                    <ns10:values>
+                      <ns10:value lang="de">Trierer Str.</ns10:value>
+                    </ns10:values>
+                  </ns10:text>
+                </ns10:addressLine>
+                <ns10:addressLine order="2" type="houseNumber">
+                  <ns10:text>
+                    <ns10:values>
+                      <ns10:value lang="de">501</ns10:value>
+                    </ns10:values>
+                  </ns10:text>
+                </ns10:addressLine>
+              </ns10:address>
+            </ns10:facilityLocation>
+          </ns10:_locationReferenceExtension>
+        </ns1:locationReference>
+        <ns3:operator id="DESTA">
+          <ns3:name>
+            <ns3:values>
+              <ns3:value lang="en">DESTA</ns3:value>
+            </ns3:values>
+          </ns3:name>
+        </ns3:operator>
+        <ns3:energyInfrastructureStation id="DESTAS0101">
+          <ns3:numberOfRefillPoints>2</ns3:numberOfRefillPoints>
+          <ns3:refillPoint id="DESTAE010101" xsi:type="ns3:ElectricChargingPoint" />
+          <ns3:refillPoint id="DESTAE010102" xsi:type="ns3:ElectricChargingPoint" />
+        </ns3:energyInfrastructureStation>
+      </ns3:energyInfrastructureSite>
+    </ns3:energyInfrastructureTable>
+  </ns2:payload>
+</ns2:d2Payload>
+"""
+    return gzip.compress(payload.encode("utf-8"))
+
+
+def _ladenetz_dynamic_xml_payload() -> bytes:
+    payload = """<?xml version="1.0" encoding="UTF-8"?>
+<ns2:messageContainer
+    xmlns="http://datex2.eu/schema/3/common"
+    xmlns:ns1="http://datex2.eu/schema/3/facilities"
+    xmlns:ns2="http://datex2.eu/schema/3/messageContainer"
+    xmlns:ns3="http://datex2.eu/schema/3/energyInfrastructure"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ns2:payload>
+    <ns2:dynamicInformation>
+      <ns3:energyInfrastructureSiteStatus>
+        <ns1:reference id="DESTA" />
+        <ns3:energyInfrastructureStationStatus>
+          <ns1:reference id="DESTAS0101" />
+          <ns3:refillPointStatus xsi:type="ns3:ElectricChargingPointStatus">
+            <ns1:reference id="DESTAE010101" />
+            <ns1:lastUpdated>2026-04-16T08:00:00Z</ns1:lastUpdated>
+            <ns3:status>charging</ns3:status>
+          </ns3:refillPointStatus>
+          <ns3:refillPointStatus xsi:type="ns3:ElectricChargingPointStatus">
+            <ns1:reference id="DESTAE010102" />
+            <ns1:lastUpdated>2026-04-16T08:00:00Z</ns1:lastUpdated>
+            <ns3:status>available</ns3:status>
+          </ns3:refillPointStatus>
+        </ns3:energyInfrastructureStationStatus>
+      </ns3:energyInfrastructureSiteStatus>
+    </ns2:dynamicInformation>
+  </ns2:payload>
+</ns2:messageContainer>
+"""
+    return gzip.compress(payload.encode("utf-8"))
 
 
 def test_load_static_subscription_ids_reads_registry(tmp_path: Path):
@@ -176,6 +280,33 @@ def test_parse_eliso_static_sites_keeps_distinct_sites_with_same_operator_code()
         "Gutshofstraße 26 | 26871 | Papenburg",
         "Parkplatz Brandbühl | 78315 | Radolfzell am Bodensee",
     ]
+
+
+def test_parse_datex_static_sites_supports_ladenetz_xml_payload():
+    payload = build_data.decode_json_bytes(_ladenetz_static_xml_payload())
+
+    sites = build_data.parse_datex_static_sites(payload)
+
+    assert len(sites) == 1
+    assert sites[0].site_id == "DESTA"
+    assert sites[0].station_ids == ("DESTAS0101",)
+    assert sites[0].evse_ids == ("DESTAE010101", "DESTAE010102")
+    assert sites[0].postcode == "52078"
+    assert sites[0].city == "Aachen"
+    assert sites[0].address == "Trierer Str. 501"
+    assert sites[0].operator_name == "DESTA"
+    assert sites[0].total_evses == 2
+
+
+def test_parse_datex_dynamic_states_supports_ladenetz_xml_payload():
+    payload = build_data.decode_json_bytes(_ladenetz_dynamic_xml_payload())
+
+    states = build_data.parse_datex_dynamic_states(payload)
+
+    assert sorted(states.keys()) == ["DESTA"]
+    assert states["DESTA"]["station_refs"] == {"DESTAS0101"}
+    assert states["DESTA"]["evses"]["DESTAE010101"]["status"] == "OCCUPIED"
+    assert states["DESTA"]["evses"]["DESTAE010102"]["status"] == "AVAILABLE"
 
 
 def test_summarize_price_display_keeps_numeric_kwh_bounds():

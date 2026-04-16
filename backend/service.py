@@ -47,7 +47,7 @@ class IngestionService:
         fetched_at: str,
         payload_bytes: bytes,
         content_type: str,
-    ) -> tuple[str, int, int]:
+    ) -> dict[str, Any]:
         payload = decode_json_payload(payload_bytes)
         facts = extract_dynamic_facts(
             payload,
@@ -129,7 +129,11 @@ class IngestionService:
                     "fetched_at": fetched_at,
                     "http_status": fetch_response.http_status,
                     "observation_count": 0,
+                    "mapped_observation_count": 0,
+                    "dropped_observation_count": 0,
                     "changed_observation_count": 0,
+                    "changed_mapped_observation_count": 0,
+                    "changed_dropped_observation_count": 0,
                 }
             if fetch_response.http_status >= 400:
                 error_text = f"http_{fetch_response.http_status}"
@@ -148,7 +152,7 @@ class IngestionService:
                     "http_status": fetch_response.http_status,
                     "error": error_text,
                 }
-            payload_sha256, observation_count, changed_count = self._persist_payload(
+            ingest_stats = self._persist_payload(
                 provider_uid=provider_uid,
                 fetched_at=fetched_at,
                 payload_bytes=fetch_response.body,
@@ -160,17 +164,25 @@ class IngestionService:
                 result="ok",
                 fetched_at=fetched_at,
                 http_status=fetch_response.http_status,
-                payload_sha256=payload_sha256,
-                observation_count=observation_count,
-                changed_observation_count=changed_count,
+                payload_sha256=str(ingest_stats["payload_sha256"]),
+                observation_count=int(ingest_stats["observation_count"]),
+                mapped_observation_count=int(ingest_stats["mapped_observation_count"]),
+                dropped_observation_count=int(ingest_stats["dropped_observation_count"]),
+                changed_observation_count=int(ingest_stats["changed_observation_count"]),
+                changed_mapped_observation_count=int(ingest_stats["changed_mapped_observation_count"]),
+                changed_dropped_observation_count=int(ingest_stats["changed_dropped_observation_count"]),
             )
             return {
                 "provider_uid": provider_uid,
                 "result": "ok",
                 "fetched_at": fetched_at,
                 "http_status": fetch_response.http_status,
-                "observation_count": observation_count,
-                "changed_observation_count": changed_count,
+                "observation_count": int(ingest_stats["observation_count"]),
+                "mapped_observation_count": int(ingest_stats["mapped_observation_count"]),
+                "dropped_observation_count": int(ingest_stats["dropped_observation_count"]),
+                "changed_observation_count": int(ingest_stats["changed_observation_count"]),
+                "changed_mapped_observation_count": int(ingest_stats["changed_mapped_observation_count"]),
+                "changed_dropped_observation_count": int(ingest_stats["changed_dropped_observation_count"]),
             }
         except TimeoutError as exc:
             if not response_log_attempted:
@@ -264,7 +276,7 @@ class IngestionService:
                 request_path=request_path,
                 request_query=request_query,
             )
-            payload_sha256, observation_count, changed_count = self._persist_payload(
+            ingest_stats = self._persist_payload(
                 provider_uid=resolved_provider_uid,
                 fetched_at=received_at,
                 payload_bytes=payload_bytes,
@@ -275,9 +287,13 @@ class IngestionService:
                 provider_uid=resolved_provider_uid,
                 result="ok",
                 received_at=received_at,
-                payload_sha256=payload_sha256,
-                observation_count=observation_count,
-                changed_observation_count=changed_count,
+                payload_sha256=str(ingest_stats["payload_sha256"]),
+                observation_count=int(ingest_stats["observation_count"]),
+                mapped_observation_count=int(ingest_stats["mapped_observation_count"]),
+                dropped_observation_count=int(ingest_stats["dropped_observation_count"]),
+                changed_observation_count=int(ingest_stats["changed_observation_count"]),
+                changed_mapped_observation_count=int(ingest_stats["changed_mapped_observation_count"]),
+                changed_dropped_observation_count=int(ingest_stats["changed_dropped_observation_count"]),
             )
             return {
                 "provider_uid": resolved_provider_uid,
@@ -285,8 +301,12 @@ class IngestionService:
                 "publication_id": publication_id,
                 "result": "ok",
                 "received_at": received_at,
-                "observation_count": observation_count,
-                "changed_observation_count": changed_count,
+                "observation_count": int(ingest_stats["observation_count"]),
+                "mapped_observation_count": int(ingest_stats["mapped_observation_count"]),
+                "dropped_observation_count": int(ingest_stats["dropped_observation_count"]),
+                "changed_observation_count": int(ingest_stats["changed_observation_count"]),
+                "changed_mapped_observation_count": int(ingest_stats["changed_mapped_observation_count"]),
+                "changed_dropped_observation_count": int(ingest_stats["changed_dropped_observation_count"]),
             }
         except Exception as exc:
             if push_run_id is not None:

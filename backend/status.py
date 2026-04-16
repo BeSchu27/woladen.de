@@ -212,6 +212,7 @@ def build_bundle_live_status_report(
 ) -> dict[str, Any]:
     bundle_summary = load_bundle_station_summary(geojson_path)
     bundle_station_ids = bundle_summary["station_ids"]
+    recent_updates_by_provider = store.list_recent_provider_updates(limit_per_provider=10)
 
     provider_aggregates: dict[str, dict[str, Any]] = {}
     observed_bundle_station_ids: set[str] = set()
@@ -327,6 +328,7 @@ def build_bundle_live_status_report(
                 "last_result": str(provider.get("last_result") or "") or None,
                 "last_push_received_at": str(provider.get("last_push_received_at") or "") or None,
                 "last_push_result": str(provider.get("last_push_result") or "") or None,
+                "recent_updates": recent_updates_by_provider.get(provider_uid, []),
             }
         )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import json
 import sqlite3
 import tarfile
@@ -16,7 +17,7 @@ from fastapi.testclient import TestClient
 from backend.api import create_app
 from backend.archive import DailyResponseArchiver
 from backend.config import AppConfig
-from backend.datex import extract_dynamic_facts
+from backend.datex import decode_json_payload, extract_dynamic_facts
 from backend.fetcher import CurlFetcher
 from backend.loaders import load_evse_matches, load_provider_targets, load_site_matches
 from backend.models import FetchResponse
@@ -420,6 +421,40 @@ def _direct_payload_envelope(
     }
 
 
+def _ladenetz_xml_payload(timestamp: str = "2026-04-15T08:00:00Z") -> bytes:
+    payload = f"""<?xml version="1.0" encoding="UTF-8"?>
+<ns2:messageContainer
+    xmlns="http://datex2.eu/schema/3/common"
+    xmlns:ns1="http://datex2.eu/schema/3/facilities"
+    xmlns:ns2="http://datex2.eu/schema/3/messageContainer"
+    xmlns:ns3="http://datex2.eu/schema/3/energyInfrastructure"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ns2:payload>
+    <ns2:dynamicInformation>
+      <ns3:energyInfrastructureSiteStatus>
+        <ns1:reference id="DESTA" targetClass="fac:FacilityObject" version="2026-04-16" />
+        <ns3:energyInfrastructureStationStatus>
+          <ns1:reference id="DESTAS0101" targetClass="fac:FacilityObject" version="2026-04-16" />
+          <ns3:isAvailable>true</ns3:isAvailable>
+          <ns3:refillPointStatus xsi:type="ns3:ElectricChargingPointStatus">
+            <ns1:reference id="DESTAE010101" targetClass="fac:FacilityObject" version="2026-04-16" />
+            <ns1:lastUpdated>{timestamp}</ns1:lastUpdated>
+            <ns3:status>charging</ns3:status>
+          </ns3:refillPointStatus>
+          <ns3:refillPointStatus xsi:type="ns3:ElectricChargingPointStatus">
+            <ns1:reference id="DESTAE010102" targetClass="fac:FacilityObject" version="2026-04-16" />
+            <ns1:lastUpdated>{timestamp}</ns1:lastUpdated>
+            <ns3:status>available</ns3:status>
+          </ns3:refillPointStatus>
+        </ns3:energyInfrastructureStationStatus>
+      </ns3:energyInfrastructureSiteStatus>
+    </ns2:dynamicInformation>
+  </ns2:payload>
+</ns2:messageContainer>
+"""
+    return gzip.compress(payload.encode("utf-8"))
+
+
 def _eliso_dynamic_payload() -> dict:
     return {
         "evses": [
@@ -698,6 +733,24 @@ def test_extract_dynamic_facts_parses_direct_payload_envelope():
     assert facts[1].operational_status == "AVAILABLE"
 
 
+def test_extract_dynamic_facts_parses_ladenetz_xml_payload():
+    payload = decode_json_payload(_ladenetz_xml_payload())
+    facts = extract_dynamic_facts(payload, "ladenetz_de_ladestationsdaten", {"DESTA": "station-1"})
+
+    assert len(facts) == 2
+    by_evse_id = {fact.evse_id: fact for fact in facts}
+    charging = by_evse_id["DESTAE010101"]
+    available = by_evse_id["DESTAE010102"]
+    assert charging.station_id == "station-1"
+    assert charging.station_ref == "DESTAS0101"
+    assert charging.availability_status == "occupied"
+    assert charging.operational_status == "CHARGING"
+    assert charging.source_observed_at == "2026-04-15T08:00:00Z"
+    assert available.station_id == "station-1"
+    assert available.availability_status == "free"
+    assert available.operational_status == "AVAILABLE"
+
+
 def test_extract_dynamic_facts_parses_eliso_generic_payload():
     facts = extract_dynamic_facts(
         _eliso_dynamic_payload(),
@@ -876,15 +929,25 @@ def test_ingestion_persists_observations_current_state_and_change_flags(app_conf
     first = service.ingest_provider("qwello")
     assert first["result"] == "ok"
     assert first["observation_count"] == 2
+    assert first["mapped_observation_count"] == 2
+    assert first["dropped_observation_count"] == 0
     assert first["changed_observation_count"] == 2
+    assert first["changed_mapped_observation_count"] == 2
+    assert first["changed_dropped_observation_count"] == 0
 
     fetcher.responses["qwello"] = FetchResponse(second_payload, "application/json", 200)
     second = service.ingest_provider("qwello")
+    assert second["mapped_observation_count"] == 2
+    assert second["dropped_observation_count"] == 0
     assert second["changed_observation_count"] == 0
 
     fetcher.responses["qwello"] = FetchResponse(third_payload, "application/json", 200)
     third = service.ingest_provider("qwello")
+    assert third["mapped_observation_count"] == 2
+    assert third["dropped_observation_count"] == 0
     assert third["changed_observation_count"] == 2
+    assert third["changed_mapped_observation_count"] == 2
+    assert third["changed_dropped_observation_count"] == 0
 
     store = LiveStore(app_config)
     detail = store.get_evse_detail("qwello", "DEQWEE1")
@@ -1612,6 +1675,12 @@ def test_api_status_reports_bundle_coverage_and_provider_timestamps(app_config):
     fetcher = MockFetcher({"qwello": FetchResponse(payload, "application/json", 200), "ampeco": TimeoutError("skip")})
     service = _build_service(app_config, fetcher)
     result = service.ingest_provider("qwello")
+    dropped_result = service.ingest_push(
+        provider_uid="ampeco",
+        payload_bytes=json.dumps(_dynamic_payload(status="AVAILABLE")).encode("utf-8"),
+        content_type="application/json",
+        request_path="/v1/push/ampeco",
+    )
 
     client = TestClient(create_app(app_config))
     response = client.get("/status")
@@ -1646,10 +1715,25 @@ def test_api_status_reports_bundle_coverage_and_provider_timestamps(app_config):
     ]
     assert providers["qwello"]["last_polled_at"] == result["fetched_at"]
     assert providers["qwello"]["last_result"] == "ok"
+    assert providers["qwello"]["recent_updates"][0]["update_kind"] == "poll"
+    assert providers["qwello"]["recent_updates"][0]["observation_count"] == 1
+    assert providers["qwello"]["recent_updates"][0]["mapped_observation_count"] == 1
+    assert providers["qwello"]["recent_updates"][0]["dropped_observation_count"] == 0
+    assert providers["qwello"]["recent_updates"][0]["changed_observation_count"] == 1
+    assert providers["qwello"]["recent_updates"][0]["changed_mapped_observation_count"] == 1
+    assert providers["qwello"]["recent_updates"][0]["changed_dropped_observation_count"] == 0
     assert providers["ampeco"]["stations_with_any_live_observation"] == 0
     assert providers["ampeco"]["last_received_update_at"] is None
     assert providers["ampeco"]["latest_updated_station_id"] is None
     assert providers["ampeco"]["latest_attribute_updates"] == {}
+    assert providers["ampeco"]["recent_updates"][0]["update_kind"] == "push"
+    assert providers["ampeco"]["recent_updates"][0]["received_at"] == dropped_result["received_at"]
+    assert providers["ampeco"]["recent_updates"][0]["observation_count"] == 2
+    assert providers["ampeco"]["recent_updates"][0]["mapped_observation_count"] == 0
+    assert providers["ampeco"]["recent_updates"][0]["dropped_observation_count"] == 2
+    assert providers["ampeco"]["recent_updates"][0]["changed_observation_count"] == 2
+    assert providers["ampeco"]["recent_updates"][0]["changed_mapped_observation_count"] == 0
+    assert providers["ampeco"]["recent_updates"][0]["changed_dropped_observation_count"] == 2
 
     versioned_response = client.get("/v1/status")
     assert versioned_response.status_code == 200
@@ -1667,7 +1751,12 @@ def test_push_ingestion_persists_observations_from_provider_path(app_config):
 
     assert result["result"] == "ok"
     assert result["provider_uid"] == "qwello"
+    assert result["observation_count"] == 2
+    assert result["mapped_observation_count"] == 2
+    assert result["dropped_observation_count"] == 0
     assert result["changed_observation_count"] == 2
+    assert result["changed_mapped_observation_count"] == 2
+    assert result["changed_dropped_observation_count"] == 0
 
     provider = service.store.get_provider("qwello")
     assert provider is not None
@@ -1691,6 +1780,12 @@ def test_push_ingestion_resolves_provider_from_subscription_id(app_config):
 
     assert result["result"] == "ok"
     assert result["provider_uid"] == "ampeco"
+    assert result["observation_count"] == 2
+    assert result["mapped_observation_count"] == 0
+    assert result["dropped_observation_count"] == 2
+    assert result["changed_observation_count"] == 2
+    assert result["changed_mapped_observation_count"] == 0
+    assert result["changed_dropped_observation_count"] == 2
     evse = service.store.get_evse_detail("ampeco", "DEQWEE1")
     assert evse is not None
     assert evse["current"]["availability_status"] == "free"

@@ -12,7 +12,7 @@ For the higher-level product note, see [docs/live-api-mvp.md](/Users/raphaelvolz
 - `config.py`: environment-driven runtime configuration.
 - `loaders.py`: loads provider metadata, static site-to-station matches, and charger records.
 - `fetcher.py`: polling client for Mobilithek pull and mTLS subscription endpoints.
-- `datex.py`: DATEX II v3 JSON decoding and normalization into internal facts.
+- `datex.py`: DATEX II v3 JSON/XML decoding and normalization into internal facts.
 - `store.py`: SQLite schema, persistence, scheduler state, and query helpers.
 - `service.py`: ingestion orchestration for polling and push delivery.
 - `api.py`: FastAPI app with push ingestion and read endpoints.
@@ -72,13 +72,7 @@ Upload the required Mobilithek secrets from the local machine and restart the se
   --subscriptions /path/to/mobilithek_subscriptions.json
 ```
 
-If this VPS is dedicated to the live API, install the rendered Caddy config directly:
-
-```bash
-sudo cp /etc/woladen/live.woladen.de.Caddyfile /etc/caddy/Caddyfile
-sudo caddy validate --config /etc/caddy/Caddyfile
-sudo systemctl reload caddy
-```
+If `caddy.service` is installed, `install-on-vps.sh` now manages the active Caddy config automatically by either writing `/etc/caddy/Caddyfile` or appending an import for `/etc/woladen/live.woladen.de.Caddyfile`, then validating and reloading or starting Caddy.
 
 Quick production verification:
 
@@ -259,6 +253,7 @@ Provider item fields:
 - `last_result`
 - `last_push_received_at`
 - `last_push_result`
+- `recent_updates`
 
 `latest_attribute_updates` is keyed by dynamic attribute and currently includes:
 
@@ -277,6 +272,25 @@ Each attribute entry contains:
 - `fetched_at`: backend receive time for that update
 - `source_observed_at`: provider timestamp from the DATEX payload when present
 - `value`: latest non-empty value observed for that attribute
+
+`recent_updates` is a reverse-chronological list of recent poll/push ingests for the provider.
+Each item includes:
+
+- `update_kind`: `poll` or `push`
+- `update_at`
+- `started_at`
+- `ended_at`
+- `fetched_at`
+- `received_at`
+- `result`
+- `http_status`
+- `observation_count`
+- `mapped_observation_count`
+- `dropped_observation_count`
+- `changed_observation_count`
+- `changed_mapped_observation_count`
+- `changed_dropped_observation_count`
+- `error_text`
 
 Example:
 
@@ -340,7 +354,7 @@ Push ingestion endpoint for Mobilithek subscriber delivery.
 
 Request body:
 
-- Raw DATEX II v3 JSON payload as delivered by Mobilithek
+- Raw DATEX II v3 JSON or XML payload as delivered by Mobilithek
 
 Provider resolution:
 
@@ -354,7 +368,7 @@ Expected behavior:
 - `200 OK` with empty body on successful ingestion
 - `400` when no provider hint is available
 - `404` when the referenced provider, subscription, or publication cannot be resolved
-- `422` when the payload cannot be decoded as a valid DATEX JSON object
+- `422` when the payload cannot be decoded as a valid DATEX payload
 - `500` for unexpected internal failures
 
 Recommended Mobilithek callback URLs:
@@ -496,4 +510,4 @@ Response shape:
 - Polling and push use the same normalization and persistence path in `IngestionService`.
 - Push is usually the better delivery mode for sparse station updates because it avoids constant re-polling of mostly unchanged subscriptions.
 - If a provider is meant to be push-only, disable polling for it in `live_provider_overrides.json` but keep its subscription entry in `mobilithek_subscriptions.json`.
-- The backend assumes DATEX II v3 JSON payloads and does not currently expose write endpoints other than push ingestion.
+- The backend accepts DATEX II v3 JSON and XML payloads and does not currently expose write endpoints other than push ingestion.

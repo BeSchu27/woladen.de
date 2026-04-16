@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -567,10 +568,130 @@ def get_env_text(name: str) -> str:
     return str(os.environ.get(name, "")).strip()
 
 
-def decode_json_bytes(content: bytes) -> dict[str, Any]:
+def _xml_local_name(value: str) -> str:
+    return str(value or "").split("}", 1)[-1]
+
+
+def _xml_scalar_value(text: str) -> Any:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    lowered = normalized.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return normalized
+
+
+def _merge_xml_child_value(mapping: dict[str, Any], key: str, value: Any) -> None:
+    existing = mapping.get(key)
+    if existing is None:
+        mapping[key] = value
+        return
+    if isinstance(existing, list):
+        existing.append(value)
+        return
+    mapping[key] = [existing, value]
+
+
+def _parse_xml_element(element: ET.Element) -> Any:
+    tag = _xml_local_name(element.tag)
+    attributes = {
+        _xml_local_name(key): str(value).strip()
+        for key, value in element.attrib.items()
+        if str(value).strip()
+    }
+    children = list(element)
+    text = str(element.text or "").strip()
+
+    if tag == "reference":
+        payload: dict[str, Any] = {}
+        reference_id = attributes.pop("id", "")
+        if reference_id:
+            payload["idG"] = reference_id
+        payload.update(attributes)
+        if text and "idG" not in payload:
+            payload["idG"] = text
+        return payload
+
+    if not children:
+        if attributes:
+            payload = dict(attributes)
+            if text:
+                payload["value"] = _xml_scalar_value(text)
+            return payload
+        return _xml_scalar_value(text)
+
+    payload: dict[str, Any] = {}
+    for child in children:
+        _merge_xml_child_value(payload, _xml_local_name(child.tag), _parse_xml_element(child))
+
+    payload.update(attributes)
+    if text:
+        payload["value"] = _xml_scalar_value(text)
+    return payload
+
+
+def _decode_xml_bytes(raw: bytes) -> dict[str, Any]:
+    root = ET.fromstring(raw.decode("utf-8"))
+    decoded = _parse_xml_element(root)
+    if isinstance(decoded, dict):
+        return decoded
+    return {_xml_local_name(root.tag): decoded}
+
+
+def _iter_dict_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _iter_values(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, "", (), {}):
+        return []
+    return [value]
+
+
+def _value_field(value: Any) -> Any:
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value")
+    return value
+
+
+def _reference_id(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("idG", "id", "externalIdentifier"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+    return str(value or "").strip()
+
+
+def _datex_publication_root(payload: dict[str, Any]) -> dict[str, Any]:
+    candidates: list[Any] = [
+        ((payload.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication")),
+        payload.get("aegiEnergyInfrastructureTablePublication"),
+        payload.get("payload"),
+        payload,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate.get("energyInfrastructureTable"):
+            return candidate
+    return {}
+
+
+def decode_json_bytes(content: bytes) -> dict[str, Any] | list[Any]:
     raw = content
     if raw[:2] == b"\x1f\x8b":
         raw = gzip.decompress(raw)
+    stripped = raw.lstrip()
+    if stripped.startswith(b"<"):
+        return _decode_xml_bytes(raw)
     return json.loads(raw.decode("utf-8"))
 
 
@@ -650,41 +771,50 @@ def load_provider_uid_by_static_publication(
 
 def extract_first_lang_value(payload: Any) -> str:
     if isinstance(payload, dict):
-        values = payload.get("values")
-        if isinstance(values, list):
-            for item in values:
-                if not isinstance(item, dict):
-                    continue
-                value = str(item.get("value", "")).strip()
-                if value:
-                    return value
+        for key in ("values", "value", "text", "name", "legalName"):
+            if key not in payload:
+                continue
+            value = extract_first_lang_value(payload.get(key))
+            if value:
+                return value
+        for item in payload.values():
+            value = extract_first_lang_value(item)
+            if value:
+                return value
     if isinstance(payload, list):
         for item in payload:
             value = extract_first_lang_value(item)
             if value:
                 return value
-    return str(payload or "").strip() if isinstance(payload, str) else ""
+    if payload is None:
+        return ""
+    return str(payload).strip()
 
 
 def extract_datex_site_coordinates(site: dict[str, Any]) -> tuple[float | None, float | None]:
     candidate_locations = [site.get("locationReference") or {}]
-    for station in site.get("energyInfrastructureStation") or []:
-        if isinstance(station, dict):
+    for station in _iter_dict_items(site.get("energyInfrastructureStation")):
+        if station:
             candidate_locations.append(station.get("locationReference") or {})
+        for refill_point in _iter_dict_items(station.get("refillPoint")):
+            candidate_locations.append(refill_point.get("locationReference") or {})
 
     for location_reference in candidate_locations:
         point = location_reference.get("locPointLocation") or {}
         area = location_reference.get("locAreaLocation") or {}
+        direct_point = location_reference
 
         for candidate in (
             point.get("coordinatesForDisplay"),
             ((point.get("pointByCoordinates") or {}).get("pointCoordinates") or {}),
+            direct_point.get("coordinatesForDisplay"),
+            ((direct_point.get("pointByCoordinates") or {}).get("pointCoordinates") or {}),
             area.get("coordinatesForDisplay"),
         ):
             if not isinstance(candidate, dict):
                 continue
-            lat = candidate.get("latitude")
-            lon = candidate.get("longitude")
+            lat = _value_field(candidate.get("latitude"))
+            lon = _value_field(candidate.get("longitude"))
             if lat is None or lon is None:
                 continue
             try:
@@ -697,24 +827,33 @@ def extract_datex_site_coordinates(site: dict[str, Any]) -> tuple[float | None, 
 
 def extract_datex_site_address(site: dict[str, Any]) -> tuple[str, str, str]:
     candidate_locations = [site.get("locationReference") or {}]
-    for station in site.get("energyInfrastructureStation") or []:
-        if isinstance(station, dict):
+    for station in _iter_dict_items(site.get("energyInfrastructureStation")):
+        if station:
             candidate_locations.append(station.get("locationReference") or {})
+        for refill_point in _iter_dict_items(station.get("refillPoint")):
+            candidate_locations.append(refill_point.get("locationReference") or {})
 
     for location_reference in candidate_locations:
-        point = location_reference.get("locPointLocation") or {}
-        extension = point.get("locLocationExtensionG") or {}
+        point = location_reference.get("locPointLocation") or location_reference
+        extension = (
+            point.get("locLocationExtensionG")
+            or location_reference.get("_locationReferenceExtension")
+            or location_reference.get("locLocationExtensionG")
+            or {}
+        )
         facility = extension.get("facilityLocation") or extension.get("FacilityLocation") or {}
         address = facility.get("address") or {}
         if not isinstance(address, dict):
             continue
 
-        postcode = str(address.get("postcode") or "").strip()
+        postcode = str(_value_field(address.get("postcode")) or "").strip()
         city = extract_first_lang_value(address.get("city"))
 
         address_line_parts: list[str] = []
-        for line in address.get("addressLine") or []:
-            text = extract_first_lang_value((line or {}).get("text"))
+        for line in _iter_values(address.get("addressLine")):
+            text = extract_first_lang_value((line or {}).get("text")) if isinstance(line, dict) else ""
+            if not text:
+                text = extract_first_lang_value(line)
             if text:
                 address_line_parts.append(text)
         full_address = " ".join(address_line_parts).strip()
@@ -726,14 +865,15 @@ def extract_datex_site_address(site: dict[str, Any]) -> tuple[str, str, str]:
 
 def extract_datex_operator_name(site: dict[str, Any]) -> str:
     candidate_nodes: list[dict[str, Any]] = [site]
-    for station in site.get("energyInfrastructureStation") or []:
-        if isinstance(station, dict):
-            candidate_nodes.append(station)
+    for station in _iter_dict_items(site.get("energyInfrastructureStation")):
+        candidate_nodes.append(station)
+        for refill_point in _iter_dict_items(station.get("refillPoint")):
+            candidate_nodes.append(refill_point)
 
     for candidate in candidate_nodes:
-        for key in ("operator", "owner"):
+        for key in ("operator", "owner", "energyProvider"):
             node = candidate.get(key) or {}
-            organisation = node.get("afacAnOrganisation") or {}
+            organisation = node.get("afacAnOrganisation") or node
             name = extract_first_lang_value(organisation.get("name"))
             if not name:
                 name = extract_first_lang_value(organisation.get("legalName"))
@@ -834,8 +974,7 @@ def fetch_mobilithek_subscription_payload_with_mtls(
             body_excerpt = body[:200].decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"http_{status_code}: {body_excerpt or 'request_failed'}")
 
-        raw = gzip.decompress(body) if body[:2] == b"\x1f\x8b" else body
-        return json.loads(raw.decode("utf-8"))
+        return decode_json_bytes(body)
 
 
 def fetch_mobilithek_publication_payload(
@@ -877,17 +1016,16 @@ def fetch_json_payload_from_url(
         headers=headers,
     )
     content = response.content
-    raw = gzip.decompress(content) if content[:2] == b"\x1f\x8b" else content
-    return json.loads(raw.decode("utf-8"))
+    return decode_json_bytes(content)
 
 
 def parse_datex_static_sites(payload: dict[str, Any]) -> list[DatexStaticSite]:
-    publication = (payload.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication") or {}
+    publication = _datex_publication_root(payload)
     sites: list[DatexStaticSite] = []
 
-    for table in publication.get("energyInfrastructureTable") or []:
-        for site in table.get("energyInfrastructureSite") or []:
-            site_id = str(site.get("idG") or "").strip()
+    for table in _iter_dict_items(publication.get("energyInfrastructureTable")):
+        for site in _iter_dict_items(table.get("energyInfrastructureSite")):
+            site_id = _reference_id(site)
             if not site_id:
                 continue
 
@@ -901,20 +1039,27 @@ def parse_datex_static_sites(payload: dict[str, Any]) -> list[DatexStaticSite]:
             station_ids: list[str] = []
             total_evses = 0
 
-            for station in site.get("energyInfrastructureStation") or []:
-                station_id = str(station.get("idG") or "").strip()
+            for station in _iter_dict_items(site.get("energyInfrastructureStation")):
+                station_id = _reference_id(station)
                 if station_id:
                     station_ids.append(station_id)
 
-                refill_points = station.get("refillPoint") or []
-                station_count = int(station.get("numberOfRefillPoints") or 0)
+                refill_points = _iter_dict_items(station.get("refillPoint"))
+                try:
+                    station_count = int(float(_value_field(station.get("numberOfRefillPoints")) or 0))
+                except (TypeError, ValueError):
+                    station_count = 0
                 if station_count <= 0:
                     station_count = len(refill_points)
                 total_evses += max(0, station_count)
 
                 for refill_point in refill_points:
-                    charging_point = refill_point.get("aegiElectricChargingPoint") or {}
-                    evse_id = normalize_evse_id(charging_point.get("idG"))
+                    charging_point = (
+                        refill_point.get("aegiElectricChargingPoint")
+                        or refill_point.get("aegiRefillPoint")
+                        or refill_point
+                    )
+                    evse_id = normalize_evse_id(_reference_id(charging_point))
                     if evse_id:
                         evse_ids.append(evse_id)
 
@@ -986,62 +1131,94 @@ def normalize_datex_occupancy_status(
 
 
 def parse_datex_dynamic_states(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    root_payload = (payload.get("messageContainer") or {}).get("payload") or []
     site_states: dict[str, dict[str, Any]] = {}
 
-    for container in root_payload:
-        publication = container.get("aegiEnergyInfrastructureStatusPublication") or {}
-        for site_status in publication.get("energyInfrastructureSiteStatus") or []:
-            site_reference = str(((site_status.get("reference") or {}).get("idG")) or "").strip()
-            if not site_reference:
-                continue
+    candidate_containers: list[dict[str, Any]] = [payload]
+    message_container = payload.get("messageContainer")
+    if isinstance(message_container, dict):
+        message_payload = message_container.get("payload")
+        if isinstance(message_payload, dict):
+            candidate_containers.append(message_payload)
+        elif isinstance(message_payload, list):
+            candidate_containers.extend(item for item in message_payload if isinstance(item, dict))
 
-            state = site_states.setdefault(
-                site_reference,
-                {
-                    "station_refs": set(),
-                    "evses": {},
-                    "last_updated_values": [],
-                },
-            )
+    direct_payload = payload.get("payload")
+    if isinstance(direct_payload, dict):
+        candidate_containers.append(direct_payload)
+    elif isinstance(direct_payload, list):
+        candidate_containers.extend(item for item in direct_payload if isinstance(item, dict))
 
-            site_last_updated = str(site_status.get("lastUpdated") or "").strip()
-            if site_last_updated:
-                state["last_updated_values"].append(site_last_updated)
+    seen_container_ids: set[int] = set()
+    for container in candidate_containers:
+        container_id = id(container)
+        if container_id in seen_container_ids:
+            continue
+        seen_container_ids.add(container_id)
 
-            for station_status in site_status.get("energyInfrastructureStationStatus") or []:
-                station_reference = str(
-                    ((station_status.get("reference") or {}).get("idG")) or ""
-                ).strip()
-                if station_reference:
-                    state["station_refs"].add(station_reference)
+        publications: list[dict[str, Any]] = []
+        publication = container.get("aegiEnergyInfrastructureStatusPublication")
+        if isinstance(publication, dict):
+            publications.append(publication)
+        dynamic_information = container.get("dynamicInformation")
+        if isinstance(dynamic_information, dict) and dynamic_information.get("energyInfrastructureSiteStatus"):
+            publications.append({"energyInfrastructureSiteStatus": dynamic_information.get("energyInfrastructureSiteStatus")})
+        if container.get("energyInfrastructureSiteStatus"):
+            publications.append({"energyInfrastructureSiteStatus": container.get("energyInfrastructureSiteStatus")})
 
-                station_last_updated = str(station_status.get("lastUpdated") or "").strip()
-                if station_last_updated:
-                    state["last_updated_values"].append(station_last_updated)
+        for publication in publications:
+            for site_status in _iter_dict_items(publication.get("energyInfrastructureSiteStatus")):
+                site_reference = _reference_id(site_status.get("reference"))
+                if not site_reference:
+                    continue
 
-                for refill_point_status in station_status.get("refillPointStatus") or []:
-                    charging_point_status = refill_point_status.get("aegiElectricChargingPointStatus") or {}
-                    evse_reference = normalize_evse_id(
-                        ((charging_point_status.get("reference") or {}).get("idG")) or ""
-                    )
-                    if not evse_reference:
-                        continue
+                state = site_states.setdefault(
+                    site_reference,
+                    {
+                        "station_refs": set(),
+                        "evses": {},
+                        "last_updated_values": [],
+                    },
+                )
 
-                    status = normalize_datex_occupancy_status(
-                        ((charging_point_status.get("status") or {}).get("value")),
-                        opening_status=((charging_point_status.get("openingStatus") or {}).get("value")),
-                        operation_status=((charging_point_status.get("operationStatus") or {}).get("value")),
-                        status_description=charging_point_status.get("statusDescription"),
-                    )
-                    last_updated = str(charging_point_status.get("lastUpdated") or "").strip()
-                    if last_updated:
-                        state["last_updated_values"].append(last_updated)
+                site_last_updated = str(site_status.get("lastUpdated") or "").strip()
+                if site_last_updated:
+                    state["last_updated_values"].append(site_last_updated)
 
-                    state["evses"][evse_reference] = {
-                        "status": status,
-                        "last_updated": last_updated or station_last_updated or site_last_updated,
-                    }
+                for station_status in _iter_dict_items(site_status.get("energyInfrastructureStationStatus")):
+                    station_reference = _reference_id(station_status.get("reference"))
+                    if station_reference:
+                        state["station_refs"].add(station_reference)
+
+                    station_last_updated = str(station_status.get("lastUpdated") or "").strip()
+                    if station_last_updated:
+                        state["last_updated_values"].append(station_last_updated)
+
+                    for refill_point_status in _iter_dict_items(station_status.get("refillPointStatus")):
+                        charging_point_status = (
+                            refill_point_status.get("aegiElectricChargingPointStatus")
+                            or refill_point_status.get("aegiRefillPointStatus")
+                            or refill_point_status
+                        )
+                        if not isinstance(charging_point_status, dict):
+                            continue
+                        evse_reference = normalize_evse_id(_reference_id(charging_point_status.get("reference")))
+                        if not evse_reference:
+                            continue
+
+                        status = normalize_datex_occupancy_status(
+                            _value_field(charging_point_status.get("status")),
+                            opening_status=_value_field(charging_point_status.get("openingStatus")),
+                            operation_status=_value_field(charging_point_status.get("operationStatus")),
+                            status_description=charging_point_status.get("statusDescription"),
+                        )
+                        last_updated = str(charging_point_status.get("lastUpdated") or "").strip()
+                        if last_updated:
+                            state["last_updated_values"].append(last_updated)
+
+                        state["evses"][evse_reference] = {
+                            "status": status,
+                            "last_updated": last_updated or station_last_updated or site_last_updated,
+                        }
 
     return site_states
 
@@ -3533,15 +3710,13 @@ def apply_static_publication_payload(
     payload_kind = "unsupported"
 
     if isinstance(payload, dict):
-        publication_root = (payload.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication")
+        publication_root = _datex_publication_root(payload)
         if isinstance(publication_root, dict):
             payload_kind = "datex"
             site_records = parse_datex_static_sites(payload)
-            for table in publication_root.get("energyInfrastructureTable") or []:
-                for site in (table or {}).get("energyInfrastructureSite") or []:
-                    if not isinstance(site, dict):
-                        continue
-                    site_id = normalize_optional_text(site.get("idG"))
+            for table in _iter_dict_items(publication_root.get("energyInfrastructureTable")):
+                for site in _iter_dict_items(table.get("energyInfrastructureSite")):
+                    site_id = _reference_id(site)
                     if site_id:
                         site_payload_index[site_id] = site
     elif isinstance(payload, list) and payload and isinstance(payload[0], dict):

@@ -30,12 +30,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.build_data import (
     decode_json_bytes,
-    extract_datex_operator_name,
-    extract_datex_site_address,
-    extract_datex_site_coordinates,
     fetch_mobilithek_access_token,
     haversine_distance_m,
     normalize_text,
+    parse_datex_static_sites,
     parse_datex_dynamic_states,
 )
 
@@ -326,46 +324,21 @@ def create_subscription(
 
 
 def parse_static_sites_with_operator(payload: dict[str, Any]) -> list[StaticSiteRecord]:
-    publication = (payload.get("payload") or {}).get("aegiEnergyInfrastructureTablePublication") or {}
     sites: list[StaticSiteRecord] = []
-
-    for table in publication.get("energyInfrastructureTable") or []:
-        for site in table.get("energyInfrastructureSite") or []:
-            site_id = str(site.get("idG") or "").strip()
-            if not site_id:
-                continue
-
-            lat, lon = extract_datex_site_coordinates(site)
-            if lat is None or lon is None:
-                continue
-
-            postcode, city, address = extract_datex_site_address(site)
-            operator_name = extract_datex_operator_name(site)
-            station_ids: list[str] = []
-            total_evses = 0
-
-            for station in site.get("energyInfrastructureStation") or []:
-                station_id = str(station.get("idG") or "").strip()
-                if station_id:
-                    station_ids.append(station_id)
-                station_count = int(station.get("numberOfRefillPoints") or 0)
-                if station_count <= 0:
-                    station_count = len(station.get("refillPoint") or [])
-                total_evses += max(0, station_count)
-
-            sites.append(
-                StaticSiteRecord(
-                    site_id=site_id,
-                    station_ids=tuple(dict.fromkeys(item for item in station_ids if item)),
-                    lat=float(lat),
-                    lon=float(lon),
-                    postcode=postcode,
-                    city=city,
-                    address=address,
-                    total_evses=max(0, total_evses),
-                    operator_name=operator_name,
-                )
+    for site in parse_datex_static_sites(payload):
+        sites.append(
+            StaticSiteRecord(
+                site_id=site.site_id,
+                station_ids=site.station_ids,
+                lat=float(site.lat),
+                lon=float(site.lon),
+                postcode=site.postcode,
+                city=site.city,
+                address=site.address,
+                total_evses=max(0, int(site.total_evses or 0)),
+                operator_name=site.operator_name,
             )
+        )
     return sites
 
 

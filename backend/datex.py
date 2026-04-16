@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
 
@@ -74,12 +75,116 @@ def map_display_value(value: Any, mapping: dict[str, str]) -> str:
     return mapping.get(code, "")
 
 
+def _xml_local_name(value: str) -> str:
+    return str(value or "").split("}", 1)[-1]
+
+
+def _xml_scalar_value(text: str) -> Any:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    lowered = normalized.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return normalized
+
+
+def _merge_xml_child_value(mapping: dict[str, Any], key: str, value: Any) -> None:
+    existing = mapping.get(key)
+    if existing is None:
+        mapping[key] = value
+        return
+    if isinstance(existing, list):
+        existing.append(value)
+        return
+    mapping[key] = [existing, value]
+
+
+def _parse_xml_element(element: ET.Element) -> Any:
+    tag = _xml_local_name(element.tag)
+    attributes = {_xml_local_name(key): str(value).strip() for key, value in element.attrib.items() if str(value).strip()}
+    children = list(element)
+    text = str(element.text or "").strip()
+
+    if tag == "reference":
+        payload: dict[str, Any] = {}
+        reference_id = attributes.pop("id", "")
+        if reference_id:
+            payload["idG"] = reference_id
+        payload.update(attributes)
+        if text and "idG" not in payload:
+            payload["idG"] = text
+        return payload
+
+    if not children:
+        if attributes:
+            payload = dict(attributes)
+            if text:
+                payload["value"] = _xml_scalar_value(text)
+            return payload
+        return _xml_scalar_value(text)
+
+    payload: dict[str, Any] = {}
+    for child in children:
+        _merge_xml_child_value(payload, _xml_local_name(child.tag), _parse_xml_element(child))
+
+    payload.update(attributes)
+    if text:
+        payload["value"] = _xml_scalar_value(text)
+    return payload
+
+
+def _decode_xml_payload(raw: bytes) -> dict[str, Any]:
+    root = ET.fromstring(raw.decode("utf-8"))
+    decoded = _parse_xml_element(root)
+    if isinstance(decoded, dict):
+        return decoded
+    return {_xml_local_name(root.tag): decoded}
+
+
 def decode_json_payload(content: bytes) -> dict[str, Any]:
     raw = gzip.decompress(content) if content[:2] == b"\x1f\x8b" else content
-    payload = json.loads(raw.decode("utf-8"))
+    stripped = raw.lstrip()
+    if stripped.startswith(b"<"):
+        payload = _decode_xml_payload(raw)
+    else:
+        payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("expected_json_object_payload")
     return payload
+
+
+def _iter_dict_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _iter_values(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, "", (), {}):
+        return []
+    return [value]
+
+
+def _value_field(value: Any) -> Any:
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value")
+    return value
+
+
+def _reference_id(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("idG", "id"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+    return str(value or "").strip()
 
 
 def iter_status_publications(payload: dict[str, Any]):
@@ -109,6 +214,16 @@ def iter_status_publications(payload: dict[str, Any]):
         publication = container.get("aegiEnergyInfrastructureStatusPublication")
         if isinstance(publication, dict):
             yield publication
+
+        dynamic_information = container.get("dynamicInformation")
+        if isinstance(dynamic_information, dict):
+            site_statuses = dynamic_information.get("energyInfrastructureSiteStatus")
+            if site_statuses:
+                yield {"energyInfrastructureSiteStatus": site_statuses}
+
+        direct_site_statuses = container.get("energyInfrastructureSiteStatus")
+        if direct_site_statuses:
+            yield {"energyInfrastructureSiteStatus": direct_site_statuses}
 
 
 def iter_walk_nodes(value: Any):
@@ -264,26 +379,24 @@ def collect_datex_price_components(value: Any) -> dict[str, Any]:
             continue
         rate_lists = [node.get("energyRate"), node.get("energyRateUpdate")]
         for energy_rates in rate_lists:
-            if not isinstance(energy_rates, list):
-                continue
-            for rate in energy_rates:
-                if not isinstance(rate, dict):
-                    continue
+            for rate in _iter_dict_items(energy_rates):
                 currencies.extend(
-                    str(item).strip() for item in (rate.get("applicableCurrency") or []) if str(item).strip()
+                    str(_value_field(item)).strip()
+                    for item in _iter_values(rate.get("applicableCurrency"))
+                    if str(_value_field(item)).strip()
                 )
-                for method in ((rate.get("payment") or {}).get("paymentMeans") or []):
-                    mapped = map_display_value((method or {}).get("value"), PAYMENT_METHOD_LABELS)
+                payment = rate.get("payment") or {}
+                payment_means = payment.get("paymentMeans") if isinstance(payment, dict) else payment
+                for method in _iter_values(payment_means):
+                    mapped = map_display_value(_value_field(method), PAYMENT_METHOD_LABELS)
                     if mapped:
                         payment_methods.append(mapped)
-                for price in rate.get("energyPrice") or []:
-                    if not isinstance(price, dict):
-                        continue
+                for price in _iter_dict_items(rate.get("energyPrice")):
                     try:
                         numeric_value = float(price.get("value"))
                     except (TypeError, ValueError):
                         continue
-                    price_type = normalize_code_value(((price.get("priceType") or {}).get("value")) or "")
+                    price_type = normalize_code_value(_value_field(price.get("priceType")) or "")
                     if price_type == "priceperkwh":
                         kwh_values.append(numeric_value)
                     elif price_type == "priceperminute":
@@ -475,8 +588,8 @@ def extract_dynamic_facts(
                 seen[key] = fact
 
     for publication in iter_status_publications(payload):
-        for site_status in publication.get("energyInfrastructureSiteStatus") or []:
-            site_id = str(((site_status.get("reference") or {}).get("idG")) or "").strip()
+        for site_status in _iter_dict_items(publication.get("energyInfrastructureSiteStatus")):
+            site_id = _reference_id(site_status.get("reference"))
             if not site_id:
                 continue
 
@@ -484,8 +597,8 @@ def extract_dynamic_facts(
             site_last_updated = str(site_status.get("lastUpdated") or "").strip()
             site_supplemental_facility_status = normalize_json_list(site_status.get("supplementalFacilityStatus"))
 
-            for station_status in site_status.get("energyInfrastructureStationStatus") or []:
-                station_ref = str(((station_status.get("reference") or {}).get("idG")) or "").strip()
+            for station_status in _iter_dict_items(site_status.get("energyInfrastructureStationStatus")):
+                station_ref = _reference_id(station_status.get("reference"))
                 station_price = choose_price_snapshot(
                     site_price,
                     summarize_price_snapshot(collect_datex_price_components(station_status)),
@@ -496,7 +609,7 @@ def extract_dynamic_facts(
                     station_status.get("supplementalFacilityStatus"),
                 )
 
-                for refill_point_status in station_status.get("refillPointStatus") or []:
+                for refill_point_status in _iter_dict_items(station_status.get("refillPointStatus")):
                     refill_point_price = choose_price_snapshot(
                         station_price,
                         summarize_price_snapshot(collect_datex_price_components(refill_point_status)),
@@ -508,16 +621,18 @@ def extract_dynamic_facts(
                     charging_point_status = (
                         refill_point_status.get("aegiElectricChargingPointStatus")
                         or refill_point_status.get("aegiRefillPointStatus")
-                        or {}
+                        or refill_point_status
                     )
-                    evse_id = normalize_evse_id(((charging_point_status.get("reference") or {}).get("idG")) or "")
+                    if not isinstance(charging_point_status, dict):
+                        continue
+                    evse_id = normalize_evse_id(_reference_id(charging_point_status.get("reference")))
                     if not evse_id:
                         continue
 
                     availability_status, operational_status = normalize_datex_occupancy_status(
-                        ((charging_point_status.get("status") or {}).get("value")),
-                        opening_status=((charging_point_status.get("openingStatus") or {}).get("value")),
-                        operation_status=((charging_point_status.get("operationStatus") or {}).get("value")),
+                        _value_field(charging_point_status.get("status")),
+                        opening_status=_value_field(charging_point_status.get("openingStatus")),
+                        operation_status=_value_field(charging_point_status.get("operationStatus")),
                         status_description=charging_point_status.get("statusDescription"),
                     )
                     point_last_updated = str(charging_point_status.get("lastUpdated") or "").strip()
