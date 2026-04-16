@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 
 def _load_build_data_module():
     module_path = Path(__file__).resolve().parents[1] / "scripts" / "build_data.py"
@@ -183,6 +185,28 @@ def test_load_static_subscription_ids_reads_registry(tmp_path: Path):
     }
 
 
+def test_load_dynamic_subscription_ids_reads_registry(tmp_path: Path):
+    registry_path = tmp_path / "subscriptions.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "m8mit": {
+                    "subscription_id": "980986232691372032",
+                    "static_subscription_id": "980986244745637888",
+                },
+                "wirelane": {
+                    "static_subscription_id": "980986448760786944",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert build_data.load_dynamic_subscription_ids(registry_path) == {
+        "m8mit": "980986232691372032",
+    }
+
+
 def test_load_direct_datex_sources_reads_external_registry_entries(tmp_path: Path):
     registry_path = tmp_path / "subscriptions.json"
     registry_path.write_text(
@@ -239,6 +263,200 @@ def test_load_direct_datex_sources_skips_disabled_entries(tmp_path: Path):
     assert sources == []
 
 
+def test_load_registry_datex_publications_reads_active_pairs(tmp_path: Path):
+    registry_path = tmp_path / "subscriptions.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "wirelane": {
+                    "display_name": "wirelane",
+                    "publisher": "Wirelane GmbH",
+                    "subscription_id": "980986434407878656",
+                    "publication_id": "876587237907525632",
+                    "access_mode": "auth",
+                    "static_subscription_id": "980986448760786944",
+                    "static_publication_id": "869246425829892096",
+                    "static_access_mode": "auth",
+                },
+                "eliso": {
+                    "display_name": "eliso",
+                    "publisher": "eliso GmbH",
+                    "subscription_id": "980986474933399552",
+                    "publication_id": "843502085052710912",
+                    "access_mode": "auth",
+                    "static_subscription_id": "980986489051262976",
+                    "static_publication_id": "843477276990078976",
+                    "static_access_mode": "auth",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "provider-configs.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "providers": [
+                    {
+                        "uid": "wirelane",
+                        "display_name": "wirelane",
+                        "publisher": "Wirelane GmbH",
+                        "feeds": {
+                            "static": {
+                                "publication_id": "869246425829892096",
+                                "data_model": build_data.DATEX_V3_DATA_MODEL,
+                                "access_mode": "auth",
+                                "content_data": {"accessUrl": "https://wirelane.example/static"},
+                            },
+                            "dynamic": {
+                                "publication_id": "876587237907525632",
+                                "data_model": build_data.DATEX_V3_DATA_MODEL,
+                                "access_mode": "auth",
+                                "content_data": {"accessUrl": "https://wirelane.example/dynamic"},
+                            },
+                        },
+                    },
+                    {
+                        "uid": "eliso",
+                        "display_name": "eliso",
+                        "publisher": "eliso GmbH",
+                        "feeds": {
+                            "static": {
+                                "publication_id": "843477276990078976",
+                                "data_model": "https://w3id.org/mdp/schema/data_model#MODEL_OTHER",
+                                "access_mode": "auth",
+                            },
+                            "dynamic": {
+                                "publication_id": "843502085052710912",
+                                "data_model": "https://w3id.org/mdp/schema/data_model#MODEL_OTHER",
+                                "access_mode": "auth",
+                            },
+                        },
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    publications = build_data.load_registry_datex_publications(
+        subscription_path=registry_path,
+        config_path=config_path,
+    )
+
+    assert publications == [
+        {
+            "uid": "wirelane",
+            "name": "wirelane",
+            "operator_patterns": tuple(sorted(build_data.operator_tokens("wirelane", "wirelane", "Wirelane GmbH"))),
+            "static_publication_id": "869246425829892096",
+            "dynamic_publication_id": "876587237907525632",
+            "static_access_mode": "auth",
+            "dynamic_access_mode": "auth",
+            "static_subscription_id": "980986448760786944",
+            "dynamic_subscription_id": "980986434407878656",
+            "static_access_url": "https://wirelane.example/static",
+            "dynamic_access_url": "https://wirelane.example/dynamic",
+        }
+    ]
+
+
+def test_load_provider_context_by_static_publication_reads_display_name_and_publisher(tmp_path: Path):
+    config_path = tmp_path / "provider-configs.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "providers": [
+                    {
+                        "uid": "audi_hub_energy_tables",
+                        "display_name": "audi hub energy tables",
+                        "publisher": "Audi AG",
+                        "feeds": {
+                            "static": {
+                                "publication_id": "980858103788171264",
+                            }
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert build_data.load_provider_context_by_static_publication(config_path) == {
+        "980858103788171264": {
+            "uid": "audi_hub_energy_tables",
+            "display_name": "audi hub energy tables",
+            "publisher": "Audi AG",
+        }
+    }
+
+
+def test_resolve_content_access_url_uses_provider_description_query():
+    content_data = {
+        "accessUrl": "https://api.spirii.com/v2/afir/energy-infrastructure-tables",
+        "description": (
+            "Static data\n"
+            "GET /v2/afir/energy-infrastructure-tables?customerIds=128650\n"
+            "Returns a DATEX II v3 payload."
+        ),
+    }
+
+    assert build_data.resolve_content_access_url(content_data) == (
+        "https://api.spirii.com/v2/afir/energy-infrastructure-tables?customerIds=128650"
+    )
+
+
+def test_fetch_mobilithek_access_token_reads_secret_files_when_env_missing(tmp_path: Path, monkeypatch):
+    user_file = tmp_path / "mobilithek_user.txt"
+    password_file = tmp_path / "mobilithek_pwd.txt"
+    user_file.write_text("raphael@example.com\n", encoding="utf-8")
+    password_file.write_text("top-secret\n", encoding="utf-8")
+    monkeypatch.delenv(build_data.MOBILITHEK_USERNAME_ENV, raising=False)
+    monkeypatch.delenv(build_data.MOBILITHEK_PASSWORD_ENV, raising=False)
+
+    captured: dict[str, object] = {}
+
+    class DummyResponse:
+        def json(self):
+            return {"access_token": "token-from-file"}
+
+    def fake_request_with_retries(method, url, session, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["data"] = kwargs.get("data")
+        return DummyResponse()
+
+    monkeypatch.setattr(build_data, "request_with_retries", fake_request_with_retries)
+
+    token = build_data.fetch_mobilithek_access_token(
+        session=object(),
+        username_file=user_file,
+        password_file=password_file,
+    )
+
+    assert token == "token-from-file"
+    assert captured["method"] == "POST"
+    assert captured["url"] == build_data.MOBILITHEK_TOKEN_URL
+    assert captured["data"] == {
+        "grant_type": "password",
+        "client_id": "Platform",
+        "username": "raphael@example.com",
+        "password": "top-secret",
+    }
+
+
+def test_should_attempt_static_payload_fetch_accepts_direct_access_url_without_subscription():
+    assert build_data.should_attempt_static_payload_fetch(
+        {"status": "ok", "is_accessible": False},
+        fallback_url="https://provider.example/static",
+    )
+
+    assert not build_data.should_attempt_static_payload_fetch(
+        {"status": "ok", "is_accessible": False},
+    )
+
+
 def test_fetch_mobilithek_static_payload_with_probe_falls_back_to_mtls_subscription(monkeypatch):
     attempted_urls: list[str] = []
 
@@ -272,6 +490,136 @@ def test_fetch_mobilithek_static_payload_with_probe_falls_back_to_mtls_subscript
         build_data.MOBILITHEK_PUBLICATION_FILE_URL.format(publication_id="970305056590979072"),
         build_data.MOBILITHEK_PUBLICATION_PUBLIC_FILE_URL.format(publication_id="970305056590979072"),
     ]
+
+
+def test_fetch_mobilithek_static_payload_with_probe_uses_direct_access_url_before_mtls(monkeypatch):
+    attempted_urls: list[str] = []
+
+    def fake_request_with_retries(method, url, session, **kwargs):
+        attempted_urls.append(url)
+        if url == "https://provider.example/static":
+            class DummyResponse:
+                content = json.dumps({"payload": {"source": "direct"}}).encode("utf-8")
+
+            return DummyResponse()
+        raise RuntimeError("fetch_failed")
+
+    def fake_fetch_mtls_subscription_payload(*, subscription_id: str):
+        raise AssertionError(f"mTLS should not be used: {subscription_id}")
+
+    monkeypatch.setattr(build_data, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(
+        build_data,
+        "fetch_mobilithek_subscription_payload_with_mtls",
+        fake_fetch_mtls_subscription_payload,
+    )
+
+    payload, access_mode_used, fetch_error = build_data.fetch_mobilithek_static_payload_with_probe(
+        session=object(),
+        publication_id="980858103788171264",
+        preferred_access_mode="auth",
+        access_token="token",
+        subscription_id="981605283809447936",
+        fallback_url="https://provider.example/static",
+    )
+
+    assert payload == {"payload": {"source": "direct"}}
+    assert access_mode_used == "direct_access_url"
+    assert fetch_error is None
+    assert attempted_urls == [
+        build_data.MOBILITHEK_PUBLICATION_FILE_URL.format(publication_id="980858103788171264"),
+        build_data.MOBILITHEK_PUBLICATION_PUBLIC_FILE_URL.format(publication_id="980858103788171264"),
+        "https://provider.example/static",
+    ]
+
+
+def test_build_fast_charger_frame_aggregates_bnetza_api_operator_aliases():
+    raw_df = pd.DataFrame(
+        [
+            {
+                "Ladeeinrichtungs-ID": "1000001",
+                "Betreiber": "BP Europa SE",
+                "Anzeigename (Karte)": "",
+                "Status": "In Betrieb",
+                "Art der Ladeeinrichtung": "Schnellladeeinrichtung",
+                "Anzahl Ladepunkte": "2",
+                "Nennleistung Ladeeinrichtung [kW]": "300",
+                "Inbetriebnahmedatum": "2025-01-01",
+                "Straße": "Hauptstraße",
+                "Hausnummer": "1",
+                "Postleitzahl": "10115",
+                "Ort": "Berlin",
+                "Breitengrad": "52,5200",
+                "Längengrad": "13,4050",
+                "Steckertypen1": "DC Fahrzeugkupplung Typ Combo 2 (CCS)",
+                "Nennleistung Stecker1": "300",
+                "EVSE-ID1": "DEALLEGO001272*1",
+                "EVSE-ID2": "DEALLEGO001272*2",
+            }
+        ]
+    )
+
+    fast_df = build_data.build_fast_charger_frame(
+        raw_df,
+        min_power_kw=50.0,
+        bnetza_api_station_aliases={
+            "1000001": ["BP Europa SE", "Aral Pulse", "BP Europa"],
+        },
+    )
+
+    assert len(fast_df) == 1
+    row = fast_df.iloc[0]
+    assert row["bnetza_ladestation_ids"] == ["1000001"]
+    assert row["operator_aliases"] == ["BP Europa SE", "Aral Pulse", "BP Europa"]
+
+
+def test_score_static_site_to_station_uses_station_operator_aliases():
+    site = build_data.DatexStaticSite(
+        site_id="site-1",
+        station_ids=("station-1",),
+        lat=52.5200,
+        lon=13.4050,
+        postcode="10115",
+        city="Berlin",
+        address="Completely Different 99",
+        operator_name="Aral Pulse",
+        total_evses=2,
+        evse_ids=(),
+    )
+    station_row = {
+        "station_id": "station-1",
+        "lat": 52.5209,
+        "lon": 13.4050,
+        "postcode": "10115",
+        "city": "Berlin",
+        "address": "Another Street 1",
+        "operator": "BP Europa SE",
+        "operator_aliases": ["Aral Pulse"],
+        "charging_points_count": 2,
+        "evse_ids": [],
+        "bnetza_display_name": "",
+    }
+
+    accepted, _, _, details = build_data.score_static_site_to_station(
+        site,
+        station_row,
+        publisher="Eco-Movement",
+        max_distance_m=200.0,
+    )
+
+    assert accepted is True
+    assert details["operator_similarity"] == 1.0
+
+    station_row["operator_aliases"] = []
+    accepted_without_alias, _, _, details_without_alias = build_data.score_static_site_to_station(
+        site,
+        station_row,
+        publisher="Eco-Movement",
+        max_distance_m=200.0,
+    )
+
+    assert accepted_without_alias is False
+    assert details_without_alias["operator_similarity"] == 0.0
 
 
 def test_derive_eliso_static_site_id_prefers_location_fields_over_operator_code():
