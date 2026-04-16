@@ -288,6 +288,23 @@ upsert_env_value() {
   rm -f "$temp_path" "${temp_path}.next"
 }
 
+wait_for_api_health() {
+  local health_url="http://127.0.0.1:8001/healthz"
+  local attempt
+
+  for attempt in $(seq 1 15); do
+    if curl -fsS "$health_url" >/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "Live API health check failed after waiting for startup: $health_url" >&2
+  sudo_cmd systemctl --no-pager --full status woladen-live-api.service || true
+  sudo_cmd journalctl -u woladen-live-api.service -u woladen-live-ingester.service -n 100 --no-pager || true
+  return 1
+}
+
 if remote_needs_bootstrap; then
   mkdir -p "$bundle_extract_dir"
   tar -xzf "$remote_tmp_dir/release.tar.gz" -C "$bundle_extract_dir"
@@ -360,7 +377,7 @@ if [[ $DEPLOY_PLAN_RELOAD_CADDY -eq 1 ]] && sudo_cmd systemctl list-unit-files c
   sudo_cmd systemctl reload caddy
 fi
 
-curl -fsS "http://127.0.0.1:8001/healthz" >/dev/null
+wait_for_api_health
 EOF
 
 echo "Release deployed to $SSH_TARGET"
