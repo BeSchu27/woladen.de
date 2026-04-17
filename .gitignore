@@ -44,3 +44,7 @@ output/playwright/
 tmp/
 iphone/dist/
 ingestion.log
+analysis/output/
+data/live_archives/
+data/bnetza_api_ladestation_cache.csv
+data/bnetza_api_ladestation_source.json
