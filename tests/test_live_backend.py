@@ -16,7 +16,7 @@ import backend.fetcher as fetcher_module
 from fastapi.testclient import TestClient
 
 from backend.api import create_app
-from backend.archive import DailyResponseArchiver
+from backend.archive import DailyResponseArchiveDownloader, DailyResponseArchiver
 from backend.config import AppConfig, load_env_file
 from backend.datex import decode_json_payload, extract_dynamic_facts
 from backend.fetcher import CurlFetcher
@@ -557,6 +557,21 @@ def test_load_provider_targets_adds_synthetic_direct_url_provider(app_config):
     assert provider.fetch_kind == "direct_url"
     assert provider.fetch_url == "https://api.mobidata-bw.de/ocpdb/api/public/datex/v3.5/json/realtime"
     assert provider.enabled is True
+
+
+def test_real_monta_subscription_registry_entry_enables_mtls_target():
+    repo_root = Path(__file__).resolve().parent.parent
+    providers = load_provider_targets(
+        repo_root / "data" / "mobilithek_afir_provider_configs.json",
+        subscription_registry_path=repo_root / "secret" / "mobilithek_subscriptions.json",
+    )
+
+    monta = [provider for provider in providers if provider.provider_uid == "monta"][0]
+    assert monta.enabled is True
+    assert monta.fetch_kind == "mtls_subscription"
+    assert monta.subscription_id == "982024950290042880"
+    assert monta.publication_id == "963870983660167168"
+    assert monta.fetch_url.endswith("subscriptionID=982024950290042880")
 
 
 def test_load_site_matches_derives_bundle_datex_site_matches(app_config):
@@ -1719,16 +1734,26 @@ def test_api_status_reports_bundle_coverage_and_provider_timestamps(app_config):
     assert response.status_code == 200
 
     status_payload = response.json()
+    assert status_payload["station_count"] == 1
     assert status_payload["bundle_station_count"] == 2
     assert status_payload["stations_with_any_live_observation"] == 1
     assert status_payload["stations_with_current_live_state"] == 1
-    assert status_payload["coverage_ratio"] == 0.5
+    assert status_payload["coverage_ratio"] == 1.0
+    assert status_payload["bundle_stations_with_any_live_observation"] == 1
+    assert status_payload["bundle_stations_with_current_live_state"] == 1
+    assert status_payload["bundle_coverage_ratio"] == 0.5
+    assert status_payload["stations_with_any_live_observation_outside_bundle"] == 0
+    assert status_payload["observed_station_ids_not_in_full_registry"] == 0
     assert status_payload["last_received_update_at"] == result["fetched_at"]
     assert status_payload["latest_updated_station_id"] == "station-1"
     assert status_payload["providers_with_any_live_observation"] == 1
+    assert status_payload["providers_with_any_live_observation_in_bundle"] == 1
 
     providers = {item["provider_uid"]: item for item in status_payload["providers"]}
     assert providers["qwello"]["stations_with_any_live_observation"] == 1
+    assert providers["qwello"]["stations_with_any_live_observation_in_bundle"] == 1
+    assert providers["qwello"]["coverage_ratio"] == 1.0
+    assert providers["qwello"]["bundle_coverage_ratio"] == 0.5
     assert providers["qwello"]["last_received_update_at"] == result["fetched_at"]
     assert providers["qwello"]["last_source_update_at"] == "2026-04-15T08:00:00+00:00"
     assert providers["qwello"]["latest_updated_station_id"] == "station-1"
@@ -2054,6 +2079,141 @@ def test_daily_response_archiver_local_only_keeps_tgz(app_config):
     archive_path = Path(result["archive_path"])
     assert archive_path.exists()
     assert not provider_dir.exists()
+
+
+def test_daily_response_archive_downloader_fetches_expected_remote_tgz(app_config):
+    token_file = app_config.archive_dir / "huggingface.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("secret-token\n", encoding="utf-8")
+
+    source_path = app_config.archive_dir / "download-source.tgz"
+    source_path.write_bytes(b"archive-bytes")
+    calls: list[dict[str, object]] = []
+
+    def stub_download_file(**kwargs):
+        calls.append(kwargs)
+        return str(source_path)
+
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_repo_type="dataset",
+        hf_archive_token_file=token_file,
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    result = DailyResponseArchiveDownloader(configured, download_file=stub_download_file).download_date(date(2026, 4, 14))
+
+    assert result["result"] == "downloaded"
+    assert result["remote_path"] == "provider-response-archives/2026/04/live-provider-responses-2026-04-14.tgz"
+    assert result["target_path"] == str(configured.archive_dir / "live-provider-responses-2026-04-14.tgz")
+    assert Path(result["target_path"]).read_bytes() == b"archive-bytes"
+    assert calls == [
+        {
+            "repo_id": "raphaelvolz/woladen-live-archives",
+            "repo_type": "dataset",
+            "filename": "provider-response-archives/2026/04/live-provider-responses-2026-04-14.tgz",
+            "token": "secret-token",
+            "force_download": False,
+        }
+    ]
+
+
+def test_daily_response_archive_downloader_skips_existing_local_file(app_config):
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    target_path = configured.archive_dir / "live-provider-responses-2026-04-14.tgz"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(b"already-here")
+
+    called = False
+
+    def stub_download_file(**kwargs):
+        nonlocal called
+        called = True
+        return ""
+
+    result = DailyResponseArchiveDownloader(configured, download_file=stub_download_file).download_date(date(2026, 4, 14))
+
+    assert result["result"] == "already_present"
+    assert result["target_path"] == str(target_path)
+    assert result["file_byte_length"] == len(b"already-here")
+    assert called is False
+
+
+def test_daily_response_archive_downloader_lists_available_remote_tgzs(app_config):
+    remote_paths = [
+        "provider-response-archives/2026/04/live-provider-responses-2026-04-15.tgz",
+        "provider-response-archives/2026/04/live-provider-responses-2026-04-16.tgz",
+        "provider-response-archives/2026/04/readme.txt",
+        "other-prefix/2026/04/live-provider-responses-2026-04-17.tgz",
+    ]
+
+    class StubHfApi:
+        def __init__(self):
+            self.calls: list[dict[str, str]] = []
+
+        def list_repo_files(self, **kwargs):
+            self.calls.append(kwargs)
+            return remote_paths
+
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_repo_type="dataset",
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    local_copy = configured.archive_dir / "live-provider-responses-2026-04-16.tgz"
+    local_copy.parent.mkdir(parents=True, exist_ok=True)
+    local_copy.write_bytes(b"already-downloaded")
+
+    stub_api = StubHfApi()
+    archives = DailyResponseArchiveDownloader(configured, hf_api=stub_api).list_available_archives()
+
+    assert archives == [
+        {
+            "target_date": "2026-04-15",
+            "archive_name": "live-provider-responses-2026-04-15.tgz",
+            "remote_path": "provider-response-archives/2026/04/live-provider-responses-2026-04-15.tgz",
+            "local_path": str(configured.archive_dir / "live-provider-responses-2026-04-15.tgz"),
+            "is_downloaded": False,
+            "file_byte_length": 0,
+        },
+        {
+            "target_date": "2026-04-16",
+            "archive_name": "live-provider-responses-2026-04-16.tgz",
+            "remote_path": "provider-response-archives/2026/04/live-provider-responses-2026-04-16.tgz",
+            "local_path": str(local_copy),
+            "is_downloaded": True,
+            "file_byte_length": len(b"already-downloaded"),
+        },
+    ]
+    assert stub_api.calls == [
+        {
+            "repo_id": "raphaelvolz/woladen-live-archives",
+            "repo_type": "dataset",
+        }
+    ]
+
+
+def test_daily_response_archive_downloader_reports_latest_available_date(app_config):
+    class StubHfApi:
+        def list_repo_files(self, **kwargs):
+            return [
+                "provider-response-archives/2026/04/live-provider-responses-2026-04-14.tgz",
+                "provider-response-archives/2026/04/live-provider-responses-2026-04-16.tgz",
+            ]
+
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_repo_type="dataset",
+        hf_archive_path_prefix="provider-response-archives",
+    )
+
+    assert DailyResponseArchiveDownloader(configured, hf_api=StubHfApi()).latest_available_date() == date(2026, 4, 16)
 
 
 def test_load_env_file_can_filter_archive_settings(tmp_path, monkeypatch):

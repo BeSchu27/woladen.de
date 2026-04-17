@@ -117,16 +117,20 @@ def _pick_newer_timestamp(
     return current_text, current_station
 
 
-def _fetch_distinct_station_ids(conn, table_name: str) -> set[str]:
-    rows = conn.execute(f"SELECT DISTINCT station_id FROM {table_name} WHERE station_id <> ''").fetchall()
-    return {str(row["station_id"]) for row in rows if str(row["station_id"]).strip()}
+def _fetch_distinct_nonempty_values(conn, table_name: str, column_name: str = "station_id") -> set[str]:
+    rows = conn.execute(
+        f"SELECT DISTINCT {column_name} FROM {table_name} WHERE COALESCE({column_name}, '') <> ''"
+    ).fetchall()
+    return {str(row[column_name]) for row in rows if str(row[column_name]).strip()}
 
 
 def _ensure_provider_aggregate(provider_aggregates: dict[str, dict[str, Any]], provider_uid: str) -> dict[str, Any]:
     return provider_aggregates.setdefault(
         provider_uid,
         {
-            "station_ids": set(),
+            "full_station_ids": set(),
+            "bundle_station_ids": set(),
+            "station_ids_not_in_full_registry": set(),
             "observation_rows": 0,
             "last_received_update_at_values": [],
             "last_source_update_at_values": [],
@@ -215,14 +219,23 @@ def build_bundle_live_status_report(
     recent_updates_by_provider = store.list_recent_provider_updates(limit_per_provider=10)
 
     provider_aggregates: dict[str, dict[str, Any]] = {}
+    observed_full_station_ids: set[str] = set()
     observed_bundle_station_ids: set[str] = set()
+    observed_station_ids_not_in_full_registry: set[str] = set()
     observed_station_ids_not_in_bundle: set[str] = set()
     latest_received_update_at: str | None = None
     latest_updated_station_id: str | None = None
 
     with store.connection() as conn:
-        current_bundle_station_ids = _fetch_distinct_station_ids(conn, "station_current_state") & bundle_station_ids
-        current_state_station_ids_not_in_bundle = _fetch_distinct_station_ids(conn, "station_current_state") - bundle_station_ids
+        full_station_ids = _fetch_distinct_nonempty_values(conn, "stations")
+        current_full_station_ids = _fetch_distinct_nonempty_values(conn, "station_current_state") & full_station_ids
+        current_bundle_station_ids = current_full_station_ids & bundle_station_ids
+        current_state_station_ids_not_in_full_registry = (
+            _fetch_distinct_nonempty_values(conn, "station_current_state") - full_station_ids
+        )
+        current_state_station_ids_not_in_bundle = (
+            _fetch_distinct_nonempty_values(conn, "station_current_state") - bundle_station_ids
+        )
 
         current_rows = conn.execute(
             """
@@ -253,14 +266,21 @@ def build_bundle_live_status_report(
     for row in current_rows:
         provider_uid = str(row["provider_uid"])
         station_id = str(row["station_id"])
-        if station_id not in bundle_station_ids:
-            observed_station_ids_not_in_bundle.add(station_id)
+        aggregate = _ensure_provider_aggregate(provider_aggregates, provider_uid)
+        aggregate["observation_rows"] += 1
+        if station_id not in full_station_ids:
+            observed_station_ids_not_in_full_registry.add(station_id)
+            aggregate["station_ids_not_in_full_registry"].add(station_id)
             continue
 
-        observed_bundle_station_ids.add(station_id)
-        aggregate = _ensure_provider_aggregate(provider_aggregates, provider_uid)
-        aggregate["station_ids"].add(station_id)
-        aggregate["observation_rows"] += 1
+        observed_full_station_ids.add(station_id)
+        aggregate["full_station_ids"].add(station_id)
+        if station_id in bundle_station_ids:
+            observed_bundle_station_ids.add(station_id)
+            aggregate["bundle_station_ids"].add(station_id)
+        else:
+            observed_station_ids_not_in_bundle.add(station_id)
+
         last_received_update_at_value = str(row["fetched_at"] or "").strip()
         if last_received_update_at_value:
             aggregate["last_received_update_at_values"].append(last_received_update_at_value)
@@ -298,15 +318,20 @@ def build_bundle_live_status_report(
                 source_observed_at=source_observed_at,
             )
 
+    full_station_count = int(len(full_station_ids))
     bundle_station_count = int(bundle_summary["unique_station_count"])
-    provider_station_count_sum = int(sum(len(item["station_ids"]) for item in provider_aggregates.values()))
+    observed_full_station_ids_outside_bundle = observed_full_station_ids - bundle_station_ids
+    current_full_station_ids_outside_bundle = current_full_station_ids - bundle_station_ids
+    provider_station_count_sum = int(sum(len(item["full_station_ids"]) for item in provider_aggregates.values()))
+    provider_bundle_station_count_sum = int(sum(len(item["bundle_station_ids"]) for item in provider_aggregates.values()))
 
     providers_by_uid = {str(provider["provider_uid"]): provider for provider in providers}
     provider_items: list[dict[str, Any]] = []
     for provider_uid in sorted(set(providers_by_uid) | set(provider_aggregates)):
         provider = providers_by_uid.get(provider_uid, {})
         aggregate = provider_aggregates.get(provider_uid, {})
-        station_ids = aggregate.get("station_ids", set())
+        full_provider_station_ids = aggregate.get("full_station_ids", set())
+        bundle_provider_station_ids = aggregate.get("bundle_station_ids", set())
         last_received_update_at = _max_timestamp(aggregate.get("last_received_update_at_values", []))
         last_source_update_at = _max_timestamp(aggregate.get("last_source_update_at_values", []))
         provider_items.append(
@@ -317,9 +342,15 @@ def build_bundle_live_status_report(
                 "enabled": bool(provider.get("enabled")) if provider else False,
                 "fetch_kind": str(provider.get("fetch_kind") or ""),
                 "delta_delivery": bool(provider.get("delta_delivery")) if provider else False,
-                "stations_with_any_live_observation": len(station_ids),
+                "stations_with_any_live_observation": len(full_provider_station_ids),
+                "stations_with_any_live_observation_in_bundle": len(bundle_provider_station_ids),
                 "observation_rows": int(aggregate.get("observation_rows", 0) or 0),
-                "coverage_ratio": (len(station_ids) / bundle_station_count) if bundle_station_count else 0.0,
+                "coverage_ratio": (len(full_provider_station_ids) / full_station_count) if full_station_count else 0.0,
+                "bundle_coverage_ratio": (
+                    len(bundle_provider_station_ids) / bundle_station_count
+                ) if bundle_station_count else 0.0,
+                "station_ids_outside_bundle": len(full_provider_station_ids - bundle_station_ids),
+                "station_ids_not_in_full_registry": len(aggregate.get("station_ids_not_in_full_registry", set())),
                 "last_received_update_at": last_received_update_at,
                 "last_source_update_at": last_source_update_at,
                 "latest_updated_station_id": aggregate.get("latest_updated_station_id"),
@@ -343,12 +374,19 @@ def build_bundle_live_status_report(
     return {
         "db_path": str(store.config.db_path.resolve()),
         "geojson_path": str(geojson_path.resolve()),
+        "station_count": full_station_count,
+        "full_registry_station_count": full_station_count,
         "bundle_feature_count": int(bundle_summary["feature_count"]),
         "bundle_station_count": bundle_station_count,
         "bundle_duplicate_station_id_count": int(bundle_summary["duplicate_station_id_count"]),
-        "stations_with_any_live_observation": len(observed_bundle_station_ids),
-        "stations_with_current_live_state": len(current_bundle_station_ids),
-        "coverage_ratio": (len(observed_bundle_station_ids) / bundle_station_count) if bundle_station_count else 0.0,
+        "stations_with_any_live_observation": len(observed_full_station_ids),
+        "stations_with_current_live_state": len(current_full_station_ids),
+        "coverage_ratio": (len(observed_full_station_ids) / full_station_count) if full_station_count else 0.0,
+        "bundle_stations_with_any_live_observation": len(observed_bundle_station_ids),
+        "bundle_stations_with_current_live_state": len(current_bundle_station_ids),
+        "bundle_coverage_ratio": (
+            len(observed_bundle_station_ids) / bundle_station_count
+        ) if bundle_station_count else 0.0,
         "last_received_update_at": latest_received_update_at,
         "latest_updated_station_id": latest_updated_station_id,
         "last_source_update_at": _max_timestamp(
@@ -359,10 +397,19 @@ def build_bundle_live_status_report(
         "providers_with_any_live_observation": sum(
             1 for item in provider_items if int(item["stations_with_any_live_observation"]) > 0
         ),
+        "providers_with_any_live_observation_in_bundle": sum(
+            1 for item in provider_items if int(item["stations_with_any_live_observation_in_bundle"]) > 0
+        ),
+        "observed_station_ids_not_in_full_registry": len(observed_station_ids_not_in_full_registry),
+        "current_state_station_ids_not_in_full_registry": len(current_state_station_ids_not_in_full_registry),
         "observed_station_ids_not_in_bundle": len(observed_station_ids_not_in_bundle),
         "current_state_station_ids_not_in_bundle": len(current_state_station_ids_not_in_bundle),
+        "stations_with_any_live_observation_outside_bundle": len(observed_full_station_ids_outside_bundle),
+        "stations_with_current_live_state_outside_bundle": len(current_full_station_ids_outside_bundle),
         "provider_station_count_sum": provider_station_count_sum,
-        "provider_station_overlap_excess": provider_station_count_sum - len(observed_bundle_station_ids),
+        "provider_station_overlap_excess": provider_station_count_sum - len(observed_full_station_ids),
+        "provider_bundle_station_count_sum": provider_bundle_station_count_sum,
+        "provider_bundle_station_overlap_excess": provider_bundle_station_count_sum - len(observed_bundle_station_ids),
         "providers": provider_items,
     }
 

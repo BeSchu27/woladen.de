@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import tarfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any, Mapping
 
 from .config import AppConfig
 from .models import FetchResponse
+
+ARCHIVE_NAME_RE = re.compile(r"live-provider-responses-(\d{4}-\d{2}-\d{2})\.tgz$")
 
 
 def _utc_now() -> datetime:
@@ -227,6 +230,9 @@ class DailyResponseArchiver:
     def _archive_name(self, target_date: date) -> str:
         return f"live-provider-responses-{target_date.isoformat()}.tgz"
 
+    def archive_name(self, target_date: date) -> str:
+        return self._archive_name(target_date)
+
     def _create_archive(self, target_date: date, source_files: list[Path]) -> Path:
         self.config.archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = self.config.archive_dir / self._archive_name(target_date)
@@ -254,6 +260,9 @@ class DailyResponseArchiver:
             archive_name,
         ]
         return "/".join(part for part in parts if part)
+
+    def remote_path_for_date(self, target_date: date) -> str:
+        return self._remote_path_for_archive(target_date, self._archive_name(target_date))
 
     def _upload_archive(self, archive_path: Path, target_date: date) -> str:
         token = self.config.hf_archive_token()
@@ -284,3 +293,105 @@ class DailyResponseArchiver:
             provider_dir = cleanup_dir.parent
             if provider_dir.exists() and provider_dir != self.config.raw_payload_dir and not any(provider_dir.iterdir()):
                 provider_dir.rmdir()
+
+
+class DailyResponseArchiveDownloader:
+    def __init__(self, config: AppConfig, *, download_file: Any | None = None, hf_api: Any | None = None):
+        self.config = config
+        self.download_file = download_file
+        self.hf_api = hf_api
+        self.archiver = DailyResponseArchiver(config)
+
+    def default_target_date(self) -> date:
+        return self.archiver.default_target_date()
+
+    def _client(self) -> Any:
+        if self.hf_api is not None:
+            return self.hf_api
+        from huggingface_hub import HfApi
+
+        return HfApi(token=(self.config.hf_archive_token() or None))
+
+    def list_available_archives(self) -> list[dict[str, Any]]:
+        if not self.config.hf_archive_repo_id:
+            return []
+
+        prefix = self.config.hf_archive_path_prefix.strip("/")
+        prefix_root = f"{prefix}/" if prefix else ""
+        rows: list[dict[str, Any]] = []
+        for repo_path in self._client().list_repo_files(
+            repo_id=self.config.hf_archive_repo_id,
+            repo_type=self.config.hf_archive_repo_type,
+        ):
+            remote_path = str(repo_path).strip()
+            if prefix_root and not remote_path.startswith(prefix_root):
+                continue
+            match = ARCHIVE_NAME_RE.fullmatch(Path(remote_path).name)
+            if match is None:
+                continue
+            archive_date = date.fromisoformat(match.group(1))
+            local_path = self.config.archive_dir / Path(remote_path).name
+            rows.append(
+                {
+                    "target_date": archive_date.isoformat(),
+                    "archive_name": local_path.name,
+                    "remote_path": remote_path,
+                    "local_path": str(local_path),
+                    "is_downloaded": local_path.exists(),
+                    "file_byte_length": int(local_path.stat().st_size) if local_path.exists() else 0,
+                }
+            )
+        rows.sort(key=lambda row: (row["target_date"], row["remote_path"]))
+        return rows
+
+    def latest_available_date(self) -> date | None:
+        archives = self.list_available_archives()
+        if not archives:
+            return None
+        return date.fromisoformat(str(archives[-1]["target_date"]))
+
+    def download_date(self, target_date: date | None = None, *, force: bool = False) -> dict[str, Any]:
+        effective_date = target_date or self.default_target_date()
+        if not self.config.hf_archive_repo_id:
+            return {
+                "result": "skipped_missing_repo_config",
+                "target_date": effective_date.isoformat(),
+            }
+
+        archive_name = self.archiver.archive_name(effective_date)
+        remote_path = self.archiver.remote_path_for_date(effective_date)
+        target_path = self.config.archive_dir / archive_name
+        self.config.archive_dir.mkdir(parents=True, exist_ok=True)
+
+        if target_path.exists() and not force:
+            return {
+                "result": "already_present",
+                "target_date": effective_date.isoformat(),
+                "target_path": str(target_path),
+                "remote_path": remote_path,
+                "file_byte_length": int(target_path.stat().st_size),
+            }
+
+        downloader = self.download_file
+        if downloader is None:
+            from huggingface_hub import hf_hub_download
+
+            downloader = hf_hub_download
+
+        downloaded_path = Path(
+            downloader(
+                repo_id=self.config.hf_archive_repo_id,
+                repo_type=self.config.hf_archive_repo_type,
+                filename=remote_path,
+                token=(self.config.hf_archive_token() or None),
+                force_download=force,
+            )
+        )
+        shutil.copyfile(downloaded_path, target_path)
+        return {
+            "result": "downloaded",
+            "target_date": effective_date.isoformat(),
+            "target_path": str(target_path),
+            "remote_path": remote_path,
+            "file_byte_length": int(target_path.stat().st_size),
+        }

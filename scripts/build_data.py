@@ -96,6 +96,7 @@ RAW_META_PATH = DATA_DIR / "bnetza_source.json"
 BNETZA_API_LADESTATION_CACHE_PATH = DATA_DIR / "bnetza_api_ladestation_cache.csv"
 BNETZA_API_LADESTATION_META_PATH = DATA_DIR / "bnetza_api_ladestation_source.json"
 AMENITY_CACHE_PATH = DATA_DIR / "osm_amenity_cache.json"
+FULL_CSV_PATH = DATA_DIR / "chargers_full.csv"
 FAST_CSV_PATH = DATA_DIR / "chargers_fast.csv"
 FAST_GEOJSON_PATH = DATA_DIR / "chargers_fast.geojson"
 SUMMARY_JSON_PATH = DATA_DIR / "summary.json"
@@ -1925,8 +1926,34 @@ def build_fast_charger_frame(
     *,
     bnetza_api_station_aliases: dict[str, list[str]] | None = None,
 ) -> pd.DataFrame:
+    return _build_grouped_bnetza_station_frame(
+        raw_df,
+        bnetza_api_station_aliases=bnetza_api_station_aliases,
+        active_only=True,
+        min_power_kw=min_power_kw,
+    )
+
+
+def _station_group_key(lat: Any, lon: Any, operator: Any) -> tuple[str, str, str]:
+    return (
+        f"{float(lat):.7f}",
+        f"{float(lon):.7f}",
+        str(operator or "").strip(),
+    )
+
+
+def _build_grouped_bnetza_station_frame(
+    raw_df: pd.DataFrame,
+    *,
+    bnetza_api_station_aliases: dict[str, list[str]] | None = None,
+    active_only: bool,
+    min_power_kw: float | None = None,
+    legacy_station_ids_by_group_key: dict[tuple[str, str, str], str] | None = None,
+    include_has_active_record: bool = False,
+) -> pd.DataFrame:
     df = raw_df.copy()
     bnetza_api_station_aliases = bnetza_api_station_aliases or {}
+    legacy_station_ids_by_group_key = legacy_station_ids_by_group_key or {}
 
     lat_col = find_column(df, ["breitengrad", "latitude", "lat"], contains=True)
     lon_col = find_column(df, ["laengengrad", "long", "longitude", "lon"], contains=True)
@@ -1940,12 +1967,24 @@ def build_fast_charger_frame(
     if not lat_col or not lon_col:
         raise RuntimeError("Could not identify latitude/longitude columns in BNetzA CSV")
 
-    if len(df.columns) <= BNETZA_POWER_COLUMN_INDEX:
-        raise RuntimeError(
-            "BNetzA CSV does not have a 7th column for power extraction "
-            f"(found {len(df.columns)} columns)"
-        )
-    power_col = df.columns[BNETZA_POWER_COLUMN_INDEX]
+    power_col = find_column(
+        df,
+        [
+            "nennleistung ladeeinrichtung",
+            "nennleistungladeeinrichtung",
+            "leistung kw",
+            "max power",
+            "leistung",
+        ],
+        contains=True,
+    )
+    if not power_col:
+        if len(df.columns) <= BNETZA_POWER_COLUMN_INDEX:
+            raise RuntimeError(
+                "BNetzA CSV does not have a 7th column for power extraction "
+                f"(found {len(df.columns)} columns)"
+            )
+        power_col = df.columns[BNETZA_POWER_COLUMN_INDEX]
     raw_max_power_kw = to_max_numeric_token_float(df[power_col])
     capped_max_power_kw = to_max_numeric_token_float(
         df[power_col],
@@ -1994,7 +2033,7 @@ def build_fast_charger_frame(
         )
         connector_max = connector_power_frame.max(axis=1, skipna=True)
     else:
-        connector_max = pd.Series([pd.NA] * len(df), index=df.index, dtype="float64")
+        connector_max = pd.Series(index=df.index, dtype="float64")
 
     per_point_fallback = raw_max_power_kw / df["charging_points_count_row"].replace(0, pd.NA)
     capped_per_point_fallback = per_point_fallback.clip(
@@ -2040,15 +2079,19 @@ def build_fast_charger_frame(
 
     if status_col:
         status_norm = df[status_col].fillna("").str.lower().str.strip()
-        active_mask = status_norm.isin({"in betrieb", "inbetrieb", "in betriebnahme"})
-        active_mask |= status_norm.str.contains("in betrieb", regex=False)
+        row_is_active = status_norm.isin({"in betrieb", "inbetrieb", "in betriebnahme"})
+        row_is_active |= status_norm.str.contains("in betrieb", regex=False)
     else:
-        active_mask = pd.Series([True] * len(df), index=df.index)
+        row_is_active = pd.Series([True] * len(df), index=df.index)
 
-    df = df[active_mask & (df["max_power_kw"] >= min_power_kw)]
+    df["row_is_active"] = row_is_active.astype(bool)
 
     # Geographic sanity filter for Germany (+small buffer).
     df = df[(df["lat"].between(46.0, 56.5)) & (df["lon"].between(5.0, 16.5))]
+    if active_only:
+        df = df[df["row_is_active"]]
+    if min_power_kw is not None:
+        df = df[df["max_power_kw"] >= min_power_kw]
 
     address_parts: list[str] = []
     for hint in ["strasse", "straße", "hausnummer", "postleitzahl", "ort", "stadt"]:
@@ -2071,14 +2114,17 @@ def build_fast_charger_frame(
         df["operator"] = "Unbekannt"
 
     if address_parts:
-        df["address"] = (
-            df[address_parts]
-            .fillna("")
-            .astype(str)
-            .agg(" ".join, axis=1)
-            .str.replace(r"\s+", " ", regex=True)
-            .str.strip()
-        )
+        if df.empty:
+            df["address"] = pd.Series(index=df.index, dtype="object")
+        else:
+            df["address"] = (
+                df[address_parts]
+                .fillna("")
+                .astype(str)
+                .apply(lambda row: " ".join(row), axis=1)
+                .str.replace(r"\s+", " ", regex=True)
+                .str.strip()
+            )
     else:
         df["address"] = ""
 
@@ -2136,36 +2182,42 @@ def build_fast_charger_frame(
         if opening_times_col
         else ""
     )
-    df["bnetza_opening_hours"] = df.apply(
-        lambda row: normalize_bnetza_opening_hours(
-            row.get("bnetza_opening_hours_raw", ""),
-            row.get("bnetza_opening_days", ""),
-            row.get("bnetza_opening_times", ""),
-        ),
-        axis=1,
-    )
+    if df.empty:
+        df["bnetza_opening_hours"] = pd.Series(index=df.index, dtype="object")
+    else:
+        df["bnetza_opening_hours"] = df.apply(
+            lambda row: normalize_bnetza_opening_hours(
+                row.get("bnetza_opening_hours_raw", ""),
+                row.get("bnetza_opening_days", ""),
+                row.get("bnetza_opening_times", ""),
+            ),
+            axis=1,
+        )
     df["bnetza_commissioned_at"] = (
         df[commissioned_col].fillna("").astype(str).str.strip()
         if commissioned_col
         else ""
     )
-    df["operator_aliases_row"] = df.apply(
-        lambda row: merge_unique_text_lists(
-            pd.Series(
-                [
-                    row.get("operator", ""),
-                    row.get("bnetza_display_name", ""),
-                    *(
-                        alias
-                        for ladestation_id in row.get("bnetza_ladestation_ids_row", [])
-                        for alias in bnetza_api_station_aliases.get(str(ladestation_id), [])
-                    ),
-                ],
-                dtype="object",
-            )
-        ),
-        axis=1,
-    )
+    if df.empty:
+        df["operator_aliases_row"] = pd.Series(index=df.index, dtype="object")
+    else:
+        df["operator_aliases_row"] = df.apply(
+            lambda row: merge_unique_text_lists(
+                pd.Series(
+                    [
+                        row.get("operator", ""),
+                        row.get("bnetza_display_name", ""),
+                        *(
+                            alias
+                            for ladestation_id in row.get("bnetza_ladestation_ids_row", [])
+                            for alias in bnetza_api_station_aliases.get(str(ladestation_id), [])
+                        ),
+                    ],
+                    dtype="object",
+                )
+            ),
+            axis=1,
+        )
 
     def first_nonempty(series: pd.Series) -> str:
         for value in series:
@@ -2174,6 +2226,11 @@ def build_fast_charger_frame(
                 return text
         return ""
 
+    df = df.sort_values(
+        by=["row_is_active", "max_power_kw"],
+        ascending=[False, False],
+        kind="mergesort",
+    )
     df = (
         df.groupby(["lat", "lon", "operator"], as_index=False)
         .agg(
@@ -2196,6 +2253,7 @@ def build_fast_charger_frame(
             bnetza_opening_days=("bnetza_opening_days", first_nonempty),
             bnetza_opening_times=("bnetza_opening_times", first_nonempty),
             bnetza_commissioned_at=("bnetza_commissioned_at", first_nonempty),
+            has_active_record=("row_is_active", "max"),
         )
         .reset_index(drop=True)
     )
@@ -2229,6 +2287,11 @@ def build_fast_charger_frame(
         )
 
     def station_id(row: pd.Series) -> str:
+        legacy_station_id = legacy_station_ids_by_group_key.get(
+            _station_group_key(row["lat"], row["lon"], row["operator"])
+        )
+        if legacy_station_id:
+            return legacy_station_id
         raw = f"{row['lat']:.7f}|{row['lon']:.7f}|{row['operator']}|{row['address']}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -2259,8 +2322,38 @@ def build_fast_charger_frame(
         "bnetza_commissioned_at",
         "evse_ids",
     ]
+    if include_has_active_record:
+        selected_columns.append("has_active_record")
 
     return df[selected_columns].copy()
+
+
+def build_full_registry_station_frame(
+    raw_df: pd.DataFrame,
+    *,
+    bnetza_api_station_aliases: dict[str, list[str]] | None = None,
+    legacy_station_ids_by_group_key: dict[tuple[str, str, str], str] | None = None,
+) -> pd.DataFrame:
+    return _build_grouped_bnetza_station_frame(
+        raw_df,
+        bnetza_api_station_aliases=bnetza_api_station_aliases,
+        active_only=False,
+        min_power_kw=None,
+        legacy_station_ids_by_group_key=legacy_station_ids_by_group_key,
+        include_has_active_record=True,
+    )
+
+
+def build_fast_projection_from_full_registry(
+    full_df: pd.DataFrame,
+    *,
+    min_power_kw: float,
+) -> pd.DataFrame:
+    projected = full_df[
+        full_df["has_active_record"].fillna(False).astype(bool)
+        & (full_df["max_power_kw"].fillna(0.0) >= min_power_kw)
+    ].copy()
+    return projected.drop(columns=["has_active_record"], errors="ignore").reset_index(drop=True)
 
 
 def fetch_live_occupancy_sources(session: requests.Session) -> list[dict[str, str]]:
@@ -5320,6 +5413,7 @@ def update_readme_status(readme_path: Path, summary: dict[str, Any]) -> None:
             "",
             f"- Last build (UTC): `{run['started_at']}`",
             f"- Source: `{source.get('source_url', 'unknown')}`",
+            f"- Full registry stations: `{records.get('full_registry_stations_total', 0)}`",
             f"- Fast chargers (>= {summary['params']['min_power_kw']} kW): `{records['fast_chargers_total']}`",
             f"- Fast chargers with live occupancy: `{records.get('stations_with_live_occupancy', 0)}`",
             (
@@ -5344,6 +5438,7 @@ def update_readme_status(readme_path: Path, summary: dict[str, Any]) -> None:
             "",
             "Generated files:",
             "- `data/bnetza_cache.csv`",
+            "- `data/chargers_full.csv`",
             "- `data/chargers_fast.csv`",
             "- `data/chargers_fast.geojson`",
             "- `data/operators.json`",
@@ -5419,12 +5514,26 @@ def main() -> None:
     bnetza_api_station_aliases = load_bnetza_api_station_aliases(BNETZA_API_LADESTATION_CACHE_PATH)
     log_info(f"Raw rows loaded: {len(raw_df)}")
 
-    log_info("Stage 3/8: Building filtered fast charger frame")
-    fast_df = build_fast_charger_frame(
+    log_info("Stage 3/8: Building canonical full station frame and filtered fast charger frame")
+    legacy_fast_df = build_fast_charger_frame(
         raw_df,
         min_power_kw=args.min_power_kw,
         bnetza_api_station_aliases=bnetza_api_station_aliases,
     )
+    legacy_station_ids_by_group_key = {
+        _station_group_key(row["lat"], row["lon"], row["operator"]): str(row["station_id"])
+        for _, row in legacy_fast_df.iterrows()
+    }
+    full_df = build_full_registry_station_frame(
+        raw_df,
+        bnetza_api_station_aliases=bnetza_api_station_aliases,
+        legacy_station_ids_by_group_key=legacy_station_ids_by_group_key,
+    )
+    fast_df = build_fast_projection_from_full_registry(
+        full_df,
+        min_power_kw=args.min_power_kw,
+    )
+    log_info(f"Full registry stations: {len(full_df)}")
     log_info(f"Fast chargers after filter: {len(fast_df)}")
 
     if args.max_stations and args.max_stations > 0:
@@ -5495,12 +5604,17 @@ def main() -> None:
         ascending=[False, False],
     ).reset_index(drop=True)
 
+    full_export_df = full_df.drop(
+        columns=["evse_ids", "operator_aliases", "bnetza_ladestation_ids"],
+        errors="ignore",
+    ).copy()
     export_df = enriched_df.drop(
         columns=["evse_ids", "operator_aliases", "bnetza_ladestation_ids"],
         errors="ignore",
     ).copy()
 
     log_info("Stage 7/8: Writing data artifacts")
+    FULL_CSV_PATH.write_text(full_export_df.to_csv(index=False), encoding="utf-8")
     FAST_CSV_PATH.write_text(export_df.to_csv(index=False), encoding="utf-8")
 
     geojson = finalize_bundle_geojson(dataframe_to_geojson(export_df, source_meta))
@@ -5541,6 +5655,10 @@ def main() -> None:
         },
         "records": {
             "raw_rows": int(len(raw_df)),
+            "full_registry_stations_total": int(len(full_export_df)),
+            "full_registry_active_stations_total": int(
+                full_df["has_active_record"].fillna(False).astype(bool).sum()
+            ),
             "fast_chargers_total": int(len(export_df)),
             "stations_with_live_occupancy": stations_with_live_occupancy,
             "stations_with_static_details": stations_with_static_details,

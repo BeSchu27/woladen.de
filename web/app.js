@@ -13,6 +13,10 @@ import {
   normalizeLocationPermissionState,
   requestBrowserLocation,
 } from "./location.mjs";
+import {
+  normalizeLiveApiBaseUrl,
+  resolveLiveApiBaseUrl as computeLiveApiBaseUrl,
+} from "./live-api.mjs";
 
 /**
  * woladen.de - Modern Frontend Logic
@@ -23,12 +27,6 @@ const MAX_DISPLAY_POWER_KW = 400;
 const LIVE_SUMMARY_REFRESH_MS = 15000;
 const LIVE_API_TIMEOUT_MS = 3500;
 const LIVE_DETAIL_TIMEOUT_MS = 4000;
-const LIVE_LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1", "[::1]"]);
-const LIVE_REMOTE_HOSTS = new Map([
-  ["woladen.de", "https://live.woladen.de"],
-  ["www.woladen.de", "https://live.woladen.de"],
-  ["live.woladen.de", "https://live.woladen.de"],
-]);
 const LIVE_STATION_FIELDS = [
   "availability_status",
   "available_evses",
@@ -114,35 +112,19 @@ function formatAmenityCount(count) {
   return `${rounded} ${rounded === 1 ? "Angebot vor Ort" : "Angebote vor Ort"}`;
 }
 
-function normalizeLiveApiBaseUrl(value) {
-  const candidate = String(value || "").trim();
-  if (!candidate) {
-    return "";
-  }
-  try {
-    const url = new URL(candidate);
-    return url.toString().replace(/\/+$/, "");
-  } catch (error) {
-    console.warn("Ignoring invalid live API base URL", candidate, error);
-    return "";
-  }
-}
-
 function resolveLiveApiBaseUrl() {
-  const configured = typeof window.WOLADEN_LIVE_API_BASE_URL === "string"
+  const configuredValue = typeof window.WOLADEN_LIVE_API_BASE_URL === "string"
     ? window.WOLADEN_LIVE_API_BASE_URL.trim()
     : "";
-  if (configured) {
-    return normalizeLiveApiBaseUrl(configured);
+  const resolved = computeLiveApiBaseUrl({
+    configuredValue,
+    locationHref: window.location.href,
+    locationHostname: window.location.hostname,
+  });
+  if (!resolved && configuredValue) {
+    console.warn("Ignoring invalid live API base URL", configuredValue);
   }
-  const hostname = String(window.location.hostname || "").trim();
-  if (LIVE_LOCAL_HOSTS.has(hostname)) {
-    return normalizeLiveApiBaseUrl("https://live.woladen.de");
-  }
-  if (LIVE_REMOTE_HOSTS.has(hostname)) {
-    return normalizeLiveApiBaseUrl(LIVE_REMOTE_HOSTS.get(hostname) || "");
-  }
-  return "";
+  return resolved;
 }
 
 const LIVE_API_BASE_URL = resolveLiveApiBaseUrl();

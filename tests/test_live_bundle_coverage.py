@@ -83,6 +83,17 @@ def _write_live_db_fixture(path: Path) -> None:
                 fetched_at TEXT NOT NULL DEFAULT '',
                 ingested_at TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE stations (
+                station_id TEXT PRIMARY KEY,
+                operator TEXT NOT NULL DEFAULT '',
+                address TEXT NOT NULL DEFAULT '',
+                postcode TEXT NOT NULL DEFAULT '',
+                city TEXT NOT NULL DEFAULT '',
+                lat REAL NOT NULL DEFAULT 0,
+                lon REAL NOT NULL DEFAULT 0,
+                charging_points_count INTEGER NOT NULL DEFAULT 0,
+                max_power_kw REAL NOT NULL DEFAULT 0
+            );
             """
         )
         conn.executemany(
@@ -237,12 +248,32 @@ def _write_live_db_fixture(path: Path) -> None:
                 ("station-x",),
             ],
         )
+        conn.executemany(
+            """
+            INSERT INTO stations (
+                station_id,
+                operator,
+                address,
+                postcode,
+                city,
+                lat,
+                lon,
+                charging_points_count,
+                max_power_kw
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("station-1", "EnBW", "Street 1", "10115", "Berlin", 52.5, 13.4, 2, 150.0),
+                ("station-2", "Tesla", "Street 2", "10117", "Berlin", 52.6, 13.5, 4, 250.0),
+                ("station-3", "Other", "Street 3", "10119", "Berlin", 52.7, 13.6, 2, 50.0),
+            ],
+        )
         conn.commit()
     finally:
         conn.close()
 
 
-def test_build_report_counts_bundle_station_coverage_from_live_observations(tmp_path: Path):
+def test_build_report_counts_full_registry_and_bundle_station_coverage_from_live_observations(tmp_path: Path):
     geojson_path = tmp_path / "chargers_fast.geojson"
     db_path = tmp_path / "live_state.sqlite3"
     _write_geojson_fixture(geojson_path)
@@ -250,17 +281,26 @@ def test_build_report_counts_bundle_station_coverage_from_live_observations(tmp_
 
     report = build_report(db_path=db_path, geojson_path=geojson_path)
 
+    assert report["station_count"] == 3
     assert report["bundle_station_count"] == 3
     assert report["stations_with_any_live_observation"] == 2
     assert report["stations_with_current_live_state"] == 2
     assert report["coverage_ratio"] == 2 / 3
-    assert report["observed_station_ids_not_in_bundle"] == 1
+    assert report["bundle_stations_with_any_live_observation"] == 2
+    assert report["bundle_stations_with_current_live_state"] == 2
+    assert report["bundle_coverage_ratio"] == 2 / 3
+    assert report["observed_station_ids_not_in_full_registry"] == 1
+    assert report["observed_station_ids_not_in_bundle"] == 0
+    assert report["current_state_station_ids_not_in_full_registry"] == 1
     assert report["current_state_station_ids_not_in_bundle"] == 1
     assert report["provider_station_count_sum"] == 3
     assert report["provider_station_overlap_excess"] == 1
+    assert report["provider_bundle_station_count_sum"] == 3
+    assert report["provider_bundle_station_overlap_excess"] == 1
     assert report["latest_updated_station_id"] == "station-2"
     provider_by_uid = {item["provider_uid"]: item for item in report["providers"]}
     assert provider_by_uid["enbwmobility"]["stations_with_any_live_observation"] == 1
+    assert provider_by_uid["enbwmobility"]["stations_with_any_live_observation_in_bundle"] == 1
     assert provider_by_uid["enbwmobility"]["observation_rows"] == 1
     assert provider_by_uid["enbwmobility"]["latest_updated_station_id"] == "station-1"
     assert provider_by_uid["enbwmobility"]["latest_attribute_updates"]["availability_status"]["value"] == "occupied"
@@ -272,15 +312,19 @@ def test_build_report_counts_bundle_station_coverage_from_live_observations(tmp_
         "parkingRestricted"
     ]
     assert provider_by_uid["chargecloud"]["stations_with_any_live_observation"] == 1
+    assert provider_by_uid["chargecloud"]["stations_with_any_live_observation_in_bundle"] == 1
     assert provider_by_uid["chargecloud"]["observation_rows"] == 1
     assert provider_by_uid["chargecloud"]["latest_updated_station_id"] == "station-2"
     assert provider_by_uid["chargecloud"]["latest_attribute_updates"]["price_energy_eur_kwh_min"]["value"] == "0.49"
     assert provider_by_uid["tesla"]["stations_with_any_live_observation"] == 1
-    assert provider_by_uid["tesla"]["observation_rows"] == 1
+    assert provider_by_uid["tesla"]["stations_with_any_live_observation_in_bundle"] == 1
+    assert provider_by_uid["tesla"]["station_ids_not_in_full_registry"] == 1
+    assert provider_by_uid["tesla"]["observation_rows"] == 2
     assert provider_by_uid["tesla"]["latest_updated_station_id"] == "station-2"
     assert provider_by_uid["tesla"]["latest_attribute_updates"]["operational_status"]["value"] == "CHARGING"
     assert provider_by_uid["enbwmobility"]["last_received_update_at"] == "2026-04-15T10:05:00+00:00"
     assert report["providers_with_any_live_observation"] == 3
+    assert report["providers_with_any_live_observation_in_bundle"] == 3
 
 
 def test_format_human_report_mentions_non_additive_provider_counts(tmp_path: Path):
@@ -292,7 +336,11 @@ def test_format_human_report_mentions_non_additive_provider_counts(tmp_path: Pat
     report = build_report(db_path=db_path, geojson_path=geojson_path)
     text = format_human_report(report)
 
-    assert "Stations with current live state: 2 (66.67%)" in text
+    assert "Full registry stations: 3" in text
+    assert "Stations with any live observation: 2 (66.67%)" in text
+    assert "Bundle stations with any live observation: 2 (66.67%)" in text
+    assert "Observed station IDs not in full registry: 1" in text
     assert "Providers with current live state: 3" in text
     assert "Latest updated station ID: station-2" in text
     assert "Provider counts are not additive: sum=3, union=2, overlap_excess=1" in text
+    assert "Bundle provider counts are not additive: sum=3, union=2, overlap_excess=1" in text

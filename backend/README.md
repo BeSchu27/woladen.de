@@ -18,6 +18,7 @@ For the higher-level product note, see [docs/live-api-mvp.md](/Users/raphaelvolz
 - `api.py`: FastAPI app with push ingestion and read endpoints.
 - `status.py`: bundle coverage and provider-level live status reporting for the API and CLI.
 - `archive.py`: raw request/response logging and daily archive bundling.
+- `archive.py`: raw request/response logging plus daily archive upload/download helpers.
 - `subscriptions.py`: helpers for syncing subscription IDs from Mobilithek account data.
 
 ## Data Flow
@@ -92,6 +93,7 @@ The backend uses `AppConfig` in [config.py](/Users/raphaelvolz/Github/woladen.de
 - `WOLADEN_LIVE_PROVIDER_CONFIG_PATH`: provider metadata JSON. Default: `data/mobilithek_afir_provider_configs.json`
 - `WOLADEN_LIVE_SITE_MATCH_PATH`: site-to-station match CSV. Default: `data/mobilithek_afir_static_matches.csv`
 - `WOLADEN_LIVE_CHARGERS_CSV_PATH`: charger baseline CSV. Default: `data/chargers_fast.csv`
+- `WOLADEN_LIVE_FULL_CHARGERS_CSV_PATH`: canonical full-registry charger CSV for backend matching and `/status` diagnostics. Default: `data/chargers_full.csv` when present, otherwise `data/chargers_fast.csv`
 - `WOLADEN_LIVE_CHARGERS_GEOJSON_PATH`: bundled charger GeoJSON used by `/status`. Default: `data/chargers_fast.geojson`
 - `WOLADEN_LIVE_PROVIDER_OVERRIDE_PATH`: optional provider override JSON
 - `WOLADEN_LIVE_SUBSCRIPTION_REGISTRY_PATH`: subscription registry JSON. Default: `secret/mobilithek_subscriptions.json`
@@ -144,6 +146,22 @@ Run the API server:
 python3 /Users/raphaelvolz/Github/woladen.de/scripts/live_api.py
 ```
 
+Local end-to-end smoke test against the local API instead of `https://live.woladen.de`:
+
+```bash
+python3 /Users/raphaelvolz/Github/woladen.de/scripts/live_ingester.py --provider edri
+python3 /Users/raphaelvolz/Github/woladen.de/scripts/live_api.py
+python3 -m http.server 4173 --directory /Users/raphaelvolz/Github/woladen.de/site
+```
+
+Then open:
+
+```text
+http://127.0.0.1:4173/?liveApiBaseUrl=http://127.0.0.1:8001
+```
+
+The `liveApiBaseUrl` query parameter forces the frontend to talk to the local API for that session without changing the default production mapping.
+
 Print the current bundle/live coverage report from the same logic used by `/status`:
 
 ```bash
@@ -167,6 +185,24 @@ Archive one day of raw logs:
 
 ```bash
 python3 /Users/raphaelvolz/Github/woladen.de/scripts/live_archive_logs.py --date 2026-04-14
+```
+
+List remote `.tgz` archives visible in the configured Hugging Face dataset:
+
+```bash
+python3 /Users/raphaelvolz/Github/woladen.de/scripts/live_download_archive.py --list-available
+```
+
+Download the newest visible `.tgz` archive from the configured Hugging Face dataset:
+
+```bash
+python3 /Users/raphaelvolz/Github/woladen.de/scripts/live_download_archive.py --latest-available
+```
+
+Or download yesterday's `.tgz` archive directly:
+
+```bash
+python3 /Users/raphaelvolz/Github/woladen.de/scripts/live_download_archive.py
 ```
 
 ## Storage
@@ -211,27 +247,41 @@ Response:
 ### `GET /status`
 ### `GET /v1/status`
 
-Returns a JSON status report for the current GeoJSON bundle, derived from `evse_current_state`,
-`station_current_state`, `providers`, and the bundled station IDs in `chargers_fast.geojson`.
+Returns a JSON status report derived from `evse_current_state`, `station_current_state`,
+`providers`, the canonical station catalog, and the bundled station IDs in `chargers_fast.geojson`.
+The primary denominators are full-registry station counts; bundle coverage remains available as
+secondary counters.
 
 Top-level fields:
 
 - `db_path`
 - `geojson_path`
+- `station_count`
+- `full_registry_station_count`
 - `bundle_feature_count`
 - `bundle_station_count`
 - `bundle_duplicate_station_id_count`
 - `stations_with_any_live_observation`
 - `stations_with_current_live_state`
 - `coverage_ratio`
-- `last_received_update_at`: latest `fetched_at` seen anywhere in the bundle
-- `latest_updated_station_id`: bundle `station_id` for the latest received dynamic update
-- `last_source_update_at`: latest source-provided observation timestamp across the bundle
+- `bundle_stations_with_any_live_observation`
+- `bundle_stations_with_current_live_state`
+- `bundle_coverage_ratio`
+- `last_received_update_at`: latest `fetched_at` seen anywhere in the full registry
+- `latest_updated_station_id`: internal `station_id` for the latest received dynamic update
+- `last_source_update_at`: latest source-provided observation timestamp across the full registry
 - `providers_with_any_live_observation`
+- `providers_with_any_live_observation_in_bundle`
+- `observed_station_ids_not_in_full_registry`
+- `current_state_station_ids_not_in_full_registry`
 - `observed_station_ids_not_in_bundle`
 - `current_state_station_ids_not_in_bundle`
+- `stations_with_any_live_observation_outside_bundle`
+- `stations_with_current_live_state_outside_bundle`
 - `provider_station_count_sum`
 - `provider_station_overlap_excess`
+- `provider_bundle_station_count_sum`
+- `provider_bundle_station_overlap_excess`
 - `providers`
 
 Provider item fields:
@@ -243,8 +293,12 @@ Provider item fields:
 - `fetch_kind`
 - `delta_delivery`
 - `stations_with_any_live_observation`
+- `stations_with_any_live_observation_in_bundle`
 - `observation_rows`: current EVSE rows contributing to the provider summary
 - `coverage_ratio`
+- `bundle_coverage_ratio`
+- `station_ids_outside_bundle`
+- `station_ids_not_in_full_registry`
 - `last_received_update_at`
 - `last_source_update_at`
 - `latest_updated_station_id`

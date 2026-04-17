@@ -573,6 +573,68 @@ def test_build_fast_charger_frame_aggregates_bnetza_api_operator_aliases():
     assert row["operator_aliases"] == ["BP Europa SE", "Aral Pulse", "BP Europa"]
 
 
+def test_build_full_registry_station_frame_reuses_legacy_fast_station_ids_and_keeps_full_point_count():
+    raw_df = pd.DataFrame(
+        [
+            {
+                "Ladeeinrichtungs-ID": "1000001",
+                "Betreiber": "Example Operator",
+                "Status": "In Betrieb",
+                "Art der Ladeeinrichtung": "Schnellladeeinrichtung",
+                "Anzahl Ladepunkte": "2",
+                "Nennleistung Ladeeinrichtung [kW]": "150",
+                "Straße": "Musterstraße",
+                "Hausnummer": "1",
+                "Postleitzahl": "10115",
+                "Ort": "Berlin",
+                "Breitengrad": "52,5200",
+                "Längengrad": "13,4050",
+            },
+            {
+                "Ladeeinrichtungs-ID": "1000002",
+                "Betreiber": "Example Operator",
+                "Status": "Außer Betrieb",
+                "Art der Ladeeinrichtung": "Normalladeeinrichtung",
+                "Anzahl Ladepunkte": "3",
+                "Nennleistung Ladeeinrichtung [kW]": "22",
+                "Straße": "Musterstraße",
+                "Hausnummer": "1",
+                "Postleitzahl": "10115",
+                "Ort": "Berlin",
+                "Breitengrad": "52,5200",
+                "Längengrad": "13,4050",
+            },
+        ]
+    )
+
+    legacy_fast_df = build_data.build_fast_charger_frame(raw_df, min_power_kw=50.0)
+    legacy_station_id = str(legacy_fast_df.iloc[0]["station_id"])
+    legacy_group_key = build_data._station_group_key(
+        legacy_fast_df.iloc[0]["lat"],
+        legacy_fast_df.iloc[0]["lon"],
+        legacy_fast_df.iloc[0]["operator"],
+    )
+
+    full_df = build_data.build_full_registry_station_frame(
+        raw_df,
+        legacy_station_ids_by_group_key={legacy_group_key: legacy_station_id},
+    )
+    fast_projection_df = build_data.build_fast_projection_from_full_registry(
+        full_df,
+        min_power_kw=50.0,
+    )
+
+    assert len(full_df) == 1
+    assert full_df.iloc[0]["station_id"] == legacy_station_id
+    assert bool(full_df.iloc[0]["has_active_record"]) is True
+    assert int(full_df.iloc[0]["charging_points_count"]) == 5
+    assert float(full_df.iloc[0]["max_power_kw"]) == 75.0
+
+    assert len(fast_projection_df) == 1
+    assert fast_projection_df.iloc[0]["station_id"] == legacy_station_id
+    assert int(fast_projection_df.iloc[0]["charging_points_count"]) == 5
+
+
 def test_score_static_site_to_station_uses_station_operator_aliases():
     site = build_data.DatexStaticSite(
         site_id="site-1",

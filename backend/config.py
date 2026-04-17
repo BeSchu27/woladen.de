@@ -8,6 +8,8 @@ from typing import Collection
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_FAST_CHARGERS_CSV_PATH = REPO_ROOT / "data" / "chargers_fast.csv"
+DEFAULT_FULL_CHARGERS_CSV_PATH = REPO_ROOT / "data" / "chargers_full.csv"
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -82,7 +84,14 @@ class AppConfig:
         )
     )
     chargers_csv_path: Path = field(
-        default_factory=lambda: _env_path("WOLADEN_LIVE_CHARGERS_CSV_PATH", REPO_ROOT / "data" / "chargers_fast.csv")
+        default_factory=lambda: _env_path("WOLADEN_LIVE_CHARGERS_CSV_PATH", DEFAULT_FAST_CHARGERS_CSV_PATH)
+    )
+    full_chargers_csv_path: Path | None = field(
+        default_factory=lambda: (
+            _env_path("WOLADEN_LIVE_FULL_CHARGERS_CSV_PATH", DEFAULT_FULL_CHARGERS_CSV_PATH)
+            if str(os.environ.get("WOLADEN_LIVE_FULL_CHARGERS_CSV_PATH", "")).strip()
+            else None
+        )
     )
     provider_override_path: Path | None = field(
         default_factory=lambda: (
@@ -159,6 +168,15 @@ class AppConfig:
     hf_archive_token_file: Path | None = field(
         default_factory=lambda: _env_optional_path("WOLADEN_LIVE_HF_ARCHIVE_TOKEN_FILE")
     )
+
+    def __post_init__(self) -> None:
+        if self.full_chargers_csv_path is None:
+            if self.chargers_csv_path != DEFAULT_FAST_CHARGERS_CSV_PATH:
+                object.__setattr__(self, "full_chargers_csv_path", self.chargers_csv_path)
+            elif DEFAULT_FULL_CHARGERS_CSV_PATH.exists():
+                object.__setattr__(self, "full_chargers_csv_path", DEFAULT_FULL_CHARGERS_CSV_PATH)
+            else:
+                object.__setattr__(self, "full_chargers_csv_path", self.chargers_csv_path)
 
     def cert_password(self) -> str:
         return self.machine_cert_password_file.read_text(encoding="utf-8").strip()

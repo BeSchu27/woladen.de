@@ -121,13 +121,20 @@ class StaticSiteRecord:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build Mobilithek AFIR provider configs and static coverage from chargers_fast.csv"
+        description="Build Mobilithek AFIR provider configs and static coverage from canonical BNetzA station catalogs"
     )
     parser.add_argument("--search-term", default="AFIR")
     parser.add_argument(
         "--chargers-csv",
         type=Path,
+        default=DATA_DIR / "chargers_full.csv",
+        help="Canonical full-registry station catalog used for provider matching.",
+    )
+    parser.add_argument(
+        "--bundle-chargers-csv",
+        type=Path,
         default=DATA_DIR / "chargers_fast.csv",
+        help="Filtered frontend/product bundle used only for secondary coverage counters.",
     )
     parser.add_argument(
         "--output-config",
@@ -365,6 +372,24 @@ def load_chargers(chargers_csv: Path) -> pd.DataFrame:
     return df[required].copy()
 
 
+def empty_static_coverage(*, fetch_status: str, access_mode: str) -> dict[str, Any]:
+    return {
+        "fetch_status": fetch_status,
+        "access_mode": access_mode,
+        "locations_scanned": 0,
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_charging_points": 0,
+        "station_coverage_ratio": 0.0,
+        "charging_point_coverage_ratio": 0.0,
+        "bundle_matched_stations": 0,
+        "bundle_matched_charging_points": 0,
+        "bundle_station_coverage_ratio": 0.0,
+        "bundle_charging_point_coverage_ratio": 0.0,
+        "site_operator_samples": [],
+    }
+
+
 def grid_key(lat: float, lon: float) -> tuple[int, int]:
     return (math.floor(lat / GRID_CELL_DEGREES), math.floor(lon / GRID_CELL_DEGREES))
 
@@ -486,6 +511,7 @@ def match_static_sites(
                         "station_charging_points_count": int(
                             station_row.get("charging_points_count", 0) or 0
                         ),
+                        "station_in_bundle": 1 if bool(station_row.get("in_bundle")) else 0,
                         "score": round(score, 2),
                     },
                 )
@@ -508,6 +534,7 @@ def match_static_sites(
 
 def summarize_static_coverage(
     df: pd.DataFrame,
+    bundle_df: pd.DataFrame,
     *,
     matches: dict[str, str],
     total_sites: int,
@@ -522,6 +549,16 @@ def summarize_static_coverage(
         df[df["station_id"].isin(matched_station_ids)]["charging_points_count"].fillna(0).astype(int).sum()
     )
     total_points = int(df["charging_points_count"].fillna(0).astype(int).sum())
+    bundle_station_ids = set(bundle_df["station_id"].astype(str)) if "station_id" in bundle_df.columns else set()
+    matched_bundle_station_ids = sorted(set(matched_station_ids) & bundle_station_ids)
+    matched_bundle_points = int(
+        bundle_df[bundle_df["station_id"].isin(matched_bundle_station_ids)]["charging_points_count"]
+        .fillna(0)
+        .astype(int)
+        .sum()
+    )
+    total_bundle_station_count = int(len(bundle_df))
+    total_bundle_points = int(bundle_df["charging_points_count"].fillna(0).astype(int).sum())
 
     return {
         "fetch_status": fetch_status,
@@ -534,6 +571,14 @@ def summarize_static_coverage(
         if total_station_count
         else 0.0,
         "charging_point_coverage_ratio": round(matched_points / total_points, 6) if total_points else 0.0,
+        "bundle_matched_stations": int(len(matched_bundle_station_ids)),
+        "bundle_matched_charging_points": matched_bundle_points,
+        "bundle_station_coverage_ratio": round(len(matched_bundle_station_ids) / total_bundle_station_count, 6)
+        if total_bundle_station_count
+        else 0.0,
+        "bundle_charging_point_coverage_ratio": round(matched_bundle_points / total_bundle_points, 6)
+        if total_bundle_points
+        else 0.0,
         "site_operator_samples": site_operator_samples[:10],
     }
 
@@ -778,6 +823,10 @@ def main() -> None:
 
     session = requests.Session()
     chargers_df = load_chargers(args.chargers_csv)
+    bundle_chargers_df = load_chargers(args.bundle_chargers_csv)
+    bundle_station_ids = set(bundle_chargers_df["station_id"].astype(str))
+    chargers_df = chargers_df.copy()
+    chargers_df["in_bundle"] = chargers_df["station_id"].astype(str).isin(bundle_station_ids)
     station_index = build_station_spatial_index(chargers_df)
     machine_cert_password = read_optional_text(args.machine_cert_password_file)
     machine_cert_probe = probe_machine_certificate(
@@ -893,30 +942,13 @@ def main() -> None:
         dynamic_feed = provider["feeds"]["dynamic"]
         print(f"[static] {provider_uid}", flush=True)
         if not static_feed:
-            static_coverage = {
-                "fetch_status": "no_static_feed",
-                "access_mode": "",
-                "locations_scanned": 0,
-                "matched_locations": 0,
-                "matched_stations": 0,
-                "matched_charging_points": 0,
-                "station_coverage_ratio": 0.0,
-                "charging_point_coverage_ratio": 0.0,
-                "site_operator_samples": [],
-            }
+            static_coverage = empty_static_coverage(fetch_status="no_static_feed", access_mode="")
         elif static_feed.get("data_model") != DATEX_V3_DATA_MODEL:
             media_type = str((static_feed.get("content_data") or {}).get("mediaType") or "")
-            static_coverage = {
-                "fetch_status": f"unsupported_static_format: {media_type or 'unknown'}",
-                "access_mode": str(static_feed.get("access_mode") or ""),
-                "locations_scanned": 0,
-                "matched_locations": 0,
-                "matched_stations": 0,
-                "matched_charging_points": 0,
-                "station_coverage_ratio": 0.0,
-                "charging_point_coverage_ratio": 0.0,
-                "site_operator_samples": [],
-            }
+            static_coverage = empty_static_coverage(
+                fetch_status=f"unsupported_static_format: {media_type or 'unknown'}",
+                access_mode=str(static_feed.get("access_mode") or ""),
+            )
         else:
             payload, resolved_access_mode, fetch_error = fetch_static_payload_with_probe(
                 session,
@@ -927,17 +959,10 @@ def main() -> None:
             )
 
             if payload is None:
-                static_coverage = {
-                    "fetch_status": fetch_error or "fetch_failed",
-                    "access_mode": resolved_access_mode,
-                    "locations_scanned": 0,
-                    "matched_locations": 0,
-                    "matched_stations": 0,
-                    "matched_charging_points": 0,
-                    "station_coverage_ratio": 0.0,
-                    "charging_point_coverage_ratio": 0.0,
-                    "site_operator_samples": [],
-                }
+                static_coverage = empty_static_coverage(
+                    fetch_status=fetch_error or "fetch_failed",
+                    access_mode=resolved_access_mode,
+                )
             else:
                 sites = parse_static_sites_with_operator(payload)
                 site_operator_samples = list(
@@ -954,6 +979,7 @@ def main() -> None:
                 detailed_match_rows.extend(match_rows)
                 static_coverage = summarize_static_coverage(
                     chargers_df,
+                    bundle_chargers_df,
                     matches=matches,
                     total_sites=len(sites),
                     fetch_status="ok",
@@ -1008,6 +1034,8 @@ def main() -> None:
 
     total_station_count = int(len(chargers_df))
     total_charging_points = int(chargers_df["charging_points_count"].fillna(0).astype(int).sum())
+    total_bundle_station_count = int(len(bundle_chargers_df))
+    total_bundle_charging_points = int(bundle_chargers_df["charging_points_count"].fillna(0).astype(int).sum())
 
     config_payload = {
         "generated_at": utc_now_iso(),
@@ -1016,16 +1044,20 @@ def main() -> None:
         "charging_offer_count": len(detailed_offers),
         "provider_config_count": len(provider_map),
         "source_chargers_csv": str(args.chargers_csv),
+        "source_bundle_chargers_csv": str(args.bundle_chargers_csv),
         "machine_certificate_probe": machine_cert_probe,
         "totals": {
             "stations": total_station_count,
             "charging_points": total_charging_points,
+            "bundle_stations": total_bundle_station_count,
+            "bundle_charging_points": total_bundle_charging_points,
         },
         "providers": [provider_map[key] for key in sorted(provider_map.keys())],
     }
     coverage_payload = {
         "generated_at": config_payload["generated_at"],
         "source_chargers_csv": str(args.chargers_csv),
+        "source_bundle_chargers_csv": str(args.bundle_chargers_csv),
         "machine_certificate_probe": machine_cert_probe,
         "totals": config_payload["totals"],
         "providers": coverage_rows,

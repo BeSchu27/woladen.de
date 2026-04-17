@@ -9,6 +9,7 @@ JSON files and archived separately once per day.
 - `scripts/live_ingester.py`: seeds metadata, polls dynamic providers, stores current state in SQLite, and writes one raw response log file per fetch.
 - `scripts/live_api.py`: serves the read API on `127.0.0.1:8001` by default and also exposes the push-ingestion endpoint used by Mobilithek subscriber push delivery.
 - `scripts/live_archive_logs.py`: bundles one day of provider response logs into a `.tgz` and uploads it to Hugging Face Hub.
+- `scripts/live_download_archive.py`: lists visible remote `.tgz` archives and downloads one archived bundle back from the configured Hugging Face dataset into `data/live_archives/`.
 
 ## Local Usage
 
@@ -42,6 +43,20 @@ Run the API:
 python3 scripts/live_api.py
 ```
 
+Smoke-test the local frontend against the local API instead of the production backend:
+
+```bash
+python3 -m http.server 4173 --directory site
+```
+
+Open:
+
+```text
+http://127.0.0.1:4173/?liveApiBaseUrl=http://127.0.0.1:8001
+```
+
+The `liveApiBaseUrl` query parameter overrides the default `https://live.woladen.de` mapping for that browser session.
+
 Mobilithek push reachability probe:
 
 ```bash
@@ -54,11 +69,30 @@ Archive and upload one day of response logs manually:
 python3 scripts/live_archive_logs.py --date 2026-04-14
 ```
 
+List remote archived response bundles from Hugging Face:
+
+```bash
+python3 scripts/live_download_archive.py --list-available
+```
+
+Download the newest archived response bundle from Hugging Face:
+
+```bash
+python3 scripts/live_download_archive.py --latest-available
+```
+
+Or download yesterday's archived response bundle:
+
+```bash
+python3 scripts/live_download_archive.py
+```
+
 ## Defaults
 
 - SQLite DB: `data/live_state.sqlite3`
 - Provider response logs: `data/live_raw/<provider>/<YYYY-MM-DD>/*.json`
 - Daily response archives: `data/live_archives/live-provider-responses-<YYYY-MM-DD>.tgz`
+- Canonical backend charger catalog: `data/chargers_full.csv`
 - Machine certificate: `secret/certificate.p12`
 - Machine certificate password: `secret/pwd.txt`
 - mTLS subscription registry: `secret/mobilithek_subscriptions.json`

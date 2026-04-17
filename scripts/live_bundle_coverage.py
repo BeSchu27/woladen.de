@@ -37,7 +37,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_report(*, db_path: Path, geojson_path: Path) -> dict[str, Any]:
-    config = AppConfig(db_path=db_path, chargers_geojson_path=geojson_path)
+    runtime_dir = db_path.parent
+    config = AppConfig(
+        db_path=db_path,
+        chargers_geojson_path=geojson_path,
+        raw_payload_dir=runtime_dir / "raw",
+        archive_dir=runtime_dir / "archives",
+    )
     return build_status_report(config=config)
 
 
@@ -45,14 +51,21 @@ def format_human_report(report: dict[str, Any]) -> str:
     lines = [
         f"DB: {report['db_path']}",
         f"GeoJSON bundle: {report['geojson_path']}",
-        f"Bundle stations: {report['bundle_station_count']}",
-        f"Stations with current live state: {report['stations_with_any_live_observation']} "
+        f"Full registry stations: {report['station_count']}",
+        f"Stations with any live observation: {report['stations_with_any_live_observation']} "
         f"({report['coverage_ratio'] * 100:.2f}%)",
         f"Stations with current live state: {report['stations_with_current_live_state']}",
         f"Providers with current live state: {report['providers_with_any_live_observation']}",
         f"Last received update: {report['last_received_update_at'] or 'n/a'}",
         f"Latest updated station ID: {report['latest_updated_station_id'] or 'n/a'}",
+        f"Bundle stations: {report['bundle_station_count']}",
+        f"Bundle stations with any live observation: {report['bundle_stations_with_any_live_observation']} "
+        f"({report['bundle_coverage_ratio'] * 100:.2f}%)",
+        f"Bundle stations with current live state: {report['bundle_stations_with_current_live_state']}",
+        f"Stations with live observation outside bundle: {report['stations_with_any_live_observation_outside_bundle']}",
+        f"Observed station IDs not in full registry: {report['observed_station_ids_not_in_full_registry']}",
         f"Observed station IDs not in bundle: {report['observed_station_ids_not_in_bundle']}",
+        f"Current-state station IDs not in full registry: {report['current_state_station_ids_not_in_full_registry']}",
         f"Current-state station IDs not in bundle: {report['current_state_station_ids_not_in_bundle']}",
     ]
 
@@ -66,6 +79,7 @@ def format_human_report(report: dict[str, Any]) -> str:
         for provider in report["providers"]:
             lines.append(
                 f"- {provider['provider_uid']}: {provider['stations_with_any_live_observation']} stations, "
+                f"{provider['stations_with_any_live_observation_in_bundle']} bundle stations, "
                 f"{provider['observation_rows']} current EVSE rows, "
                 f"last received {provider['last_received_update_at'] or 'n/a'}, "
                 f"latest station {provider['latest_updated_station_id'] or 'n/a'}"
@@ -75,6 +89,12 @@ def format_human_report(report: dict[str, Any]) -> str:
             f"sum={report['provider_station_count_sum']}, "
             f"union={report['stations_with_any_live_observation']}, "
             f"overlap_excess={report['provider_station_overlap_excess']}"
+        )
+        lines.append(
+            "Bundle provider counts are not additive: "
+            f"sum={report['provider_bundle_station_count_sum']}, "
+            f"union={report['bundle_stations_with_any_live_observation']}, "
+            f"overlap_excess={report['provider_bundle_station_overlap_excess']}"
         )
 
     return "\n".join(lines)

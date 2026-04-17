@@ -33,7 +33,9 @@
     "stations_with_price": 4005,
     "stations_with_opening_hours": 11589,
     "stations_with_helpdesk": 5373,
-    "stations_with_amenities": 14965
+    "stations_with_amenities": 14965,
+    "full_registry_stations_total": 71652,
+    "full_registry_active_stations_total": 71635
   },
   "occupancy_lookup": {
     "sources_discovered": 22,

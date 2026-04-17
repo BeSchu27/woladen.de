@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 
 def _load_configs_module():
     module_path = Path(__file__).resolve().parents[1] / "scripts" / "build_mobilithek_afir_configs.py"
@@ -77,3 +79,40 @@ def test_fetch_static_payload_with_probe_passes_subscription_id(monkeypatch):
         "access_token": "token",
         "subscription_id": "980986204027498496",
     }
+
+
+def test_summarize_static_coverage_reports_full_registry_and_bundle_counters():
+    chargers_df = pd.DataFrame(
+        [
+            {"station_id": "station-a", "charging_points_count": 2},
+            {"station_id": "station-b", "charging_points_count": 4},
+            {"station_id": "station-c", "charging_points_count": 2},
+            {"station_id": "station-z", "charging_points_count": 2},
+        ]
+    )
+    bundle_df = pd.DataFrame(
+        [
+            {"station_id": "station-a", "charging_points_count": 2},
+            {"station_id": "station-b", "charging_points_count": 4},
+            {"station_id": "station-c", "charging_points_count": 2},
+        ]
+    )
+
+    summary = build_configs.summarize_static_coverage(
+        chargers_df,
+        bundle_df,
+        matches={"site-a": "station-a", "site-b": "station-z"},
+        total_sites=2,
+        fetch_status="ok",
+        access_mode="noauth",
+        site_operator_samples=["Example Operator"],
+    )
+
+    assert summary["matched_stations"] == 2
+    assert summary["matched_charging_points"] == 4
+    assert summary["station_coverage_ratio"] == 0.5
+    assert summary["charging_point_coverage_ratio"] == 0.4
+    assert summary["bundle_matched_stations"] == 1
+    assert summary["bundle_matched_charging_points"] == 2
+    assert summary["bundle_station_coverage_ratio"] == 0.333333
+    assert summary["bundle_charging_point_coverage_ratio"] == 0.25
