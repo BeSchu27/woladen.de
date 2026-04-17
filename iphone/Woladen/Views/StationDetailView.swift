@@ -264,7 +264,11 @@ struct StationDetailView: View {
             }
             return provider.isEmpty ? nil : provider
         }
-        if candidate.hasPrefix("Live-Stand") || candidate.hasPrefix("Stand ") {
+        if candidate.hasPrefix("Live-Stand")
+            || candidate.hasPrefix("Stand ")
+            || candidate.hasPrefix("Live seit ")
+            || candidate.hasPrefix("Seit ")
+        {
             return nil
         }
         return candidate

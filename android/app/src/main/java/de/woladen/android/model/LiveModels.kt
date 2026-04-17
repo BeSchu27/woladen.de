@@ -1,6 +1,8 @@
 package de.woladen.android.model
 
+import java.time.Duration
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.LinkedHashMap
@@ -163,11 +165,11 @@ val GeoJsonFeature.occupancySourceLabel: String?
     get() {
         if (liveSummaryForDisplay != null) {
             val provider = liveSourceLabel
-            val timestamp = formatLiveTimestamp(liveObservedTimestamp)
+            val elapsed = formatElapsedLiveTime(liveObservedTimestamp)
             return when {
-                !provider.isNullOrBlank() && !timestamp.isNullOrBlank() -> "Live via $provider • Stand $timestamp"
+                !provider.isNullOrBlank() && !elapsed.isNullOrBlank() -> "Live via $provider • Seit $elapsed"
                 !provider.isNullOrBlank() -> "Live via $provider"
-                !timestamp.isNullOrBlank() -> "Live-Stand $timestamp"
+                !elapsed.isNullOrBlank() -> "Live seit $elapsed"
                 else -> "Live via lokaler API"
             }
         }
@@ -186,7 +188,7 @@ val GeoJsonFeature.occupancySourceLabel: String?
 val GeoJsonFeature.liveUpdatedLabel: String?
     get() {
         if (liveSummaryForDisplay == null) return null
-        return formatLiveTimestamp(liveObservedTimestamp)?.let { "Stand $it" }
+        return formatElapsedLiveTime(liveObservedTimestamp)?.let { "Seit $it" }
     }
 
 val GeoJsonFeature.hasPrimaryDetailHighlights: Boolean
@@ -199,7 +201,7 @@ val GeoJsonFeature.liveEvseRows: List<LiveEvseRow>
             return detail.evses.mapIndexed { index, evse ->
                 val meta = listOfNotNull(
                     formatEvseCode(evse.providerEvseId),
-                    formatLiveTimestamp(firstNonEmpty(evse.sourceObservedAt, evse.fetchedAt, evse.ingestedAt))
+                    formatElapsedLiveTime(firstNonEmpty(evse.sourceObservedAt, evse.fetchedAt, evse.ingestedAt))
                         ?.let { "Seit $it" }
                 ).joinToString(" • ")
                 LiveEvseRow(
@@ -272,15 +274,35 @@ private fun formatEvseCode(value: String): String? {
     return if (raw.length <= 20) raw else "${raw.take(10)}…${raw.takeLast(6)}"
 }
 
+internal fun formatElapsedLiveTime(value: String, now: Instant = Instant.now()): String? {
+    val raw = value.trim()
+    if (raw.isBlank()) return null
+    val instant = parseLiveInstant(raw) ?: return null
+
+    val elapsedSeconds = Duration.between(instant, now).seconds.coerceAtLeast(0)
+    return when {
+        elapsedSeconds < 60 -> "gerade eben"
+        elapsedSeconds < 60 * 60 -> "${elapsedSeconds / 60} Min."
+        elapsedSeconds < 60 * 60 * 24 -> "${elapsedSeconds / (60 * 60)} Std."
+        elapsedSeconds < 60L * 60 * 24 * 30 -> {
+            val days = elapsedSeconds / (60 * 60 * 24)
+            if (days == 1L) "1 Tag" else "$days Tage"
+        }
+        elapsedSeconds < 60L * 60 * 24 * 365 -> "${elapsedSeconds / (60L * 60 * 24 * 30)} Mon."
+        else -> "${elapsedSeconds / (60L * 60 * 24 * 365)} J."
+    }
+}
+
 private fun formatLiveTimestamp(value: String): String? {
     val raw = value.trim()
     if (raw.isBlank()) return null
-    return try {
-        val instant = Instant.parse(raw)
-        LIVE_TIMESTAMP_FORMATTER.format(instant)
-    } catch (_: Exception) {
-        raw
-    }
+    val instant = parseLiveInstant(raw) ?: return raw
+    return LIVE_TIMESTAMP_FORMATTER.format(instant)
+}
+
+private fun parseLiveInstant(raw: String): Instant? {
+    return runCatching { Instant.parse(raw) }.getOrNull()
+        ?: runCatching { OffsetDateTime.parse(raw).toInstant() }.getOrNull()
 }
 
 private fun firstNonEmpty(vararg values: String): String {

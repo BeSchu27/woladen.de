@@ -2,6 +2,16 @@ import XCTest
 @testable import Woladen
 
 final class LiveFeatureFormattingTests: XCTestCase {
+    func testFormattedElapsedLiveTimeUsesMinutesForRecentUpdates() {
+        let now = ISO8601DateFormatter().date(from: "2026-04-17T15:03:18Z")!
+        XCTAssertEqual(formattedElapsedLiveTime("2026-04-17T14:50:00Z", now: now), "13 Min.")
+    }
+
+    func testFormattedElapsedLiveTimeUsesRelativeLabelsForFreshUpdates() {
+        let now = ISO8601DateFormatter().date(from: "2026-04-17T15:03:18Z")!
+        XCTAssertEqual(formattedElapsedLiveTime("2026-04-17T15:03:00Z", now: now), "gerade eben")
+    }
+
     func testLiveSummaryOverridesBundledOccupancyAndPrice() {
         let feature = sampleFeature(
             properties: sampleProperties(

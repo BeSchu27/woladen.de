@@ -337,15 +337,15 @@ extension GeoJSONFeature {
     var occupancySourceLabel: String? {
         if liveSummaryForDisplay != nil {
             let provider = liveSourceLabel
-            let timestamp = formattedLiveTimestamp(liveObservedTimestamp)
-            if let provider, let timestamp {
-                return "Live via \(provider) • Stand \(timestamp)"
+            let elapsed = formattedElapsedLiveTime(liveObservedTimestamp)
+            if let provider, let elapsed {
+                return "Live via \(provider) • Seit \(elapsed)"
             }
             if let provider {
                 return "Live via \(provider)"
             }
-            if let timestamp {
-                return "Live-Stand \(timestamp)"
+            if let elapsed {
+                return "Live seit \(elapsed)"
             }
             return "Live via lokaler API"
         }
@@ -369,8 +369,8 @@ extension GeoJSONFeature {
 
     var liveUpdatedLabel: String? {
         guard liveSummaryForDisplay != nil else { return nil }
-        guard let timestamp = formattedLiveTimestamp(liveObservedTimestamp) else { return nil }
-        return "Stand \(timestamp)"
+        guard let elapsed = formattedElapsedLiveTime(liveObservedTimestamp) else { return nil }
+        return "Seit \(elapsed)"
     }
 
     var hasPrimaryDetailHighlights: Bool {
@@ -380,7 +380,7 @@ extension GeoJSONFeature {
     var liveEVSERows: [LiveEVSERow] {
         if let liveDetail, !liveDetail.evses.isEmpty {
             return liveDetail.evses.enumerated().map { index, evse in
-                let observedText = formattedLiveTimestamp(
+                let observedText = formattedElapsedLiveTime(
                     firstNonEmpty(evse.sourceObservedAt, evse.fetchedAt, evse.ingestedAt)
                 )
                 let meta = [formattedEVSECode(evse.providerEVSEID), observedText]
@@ -455,23 +455,58 @@ private func formattedProviderLabel(_ value: String) -> String {
         .replacingOccurrences(of: "_", with: " ")
 }
 
+func formattedElapsedLiveTime(_ value: String, now: Date = Date()) -> String? {
+    let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !raw.isEmpty else { return nil }
+    guard let date = parsedLiveDate(raw) else { return nil }
+
+    let elapsedSeconds = max(0, Int(now.timeIntervalSince(date)))
+    if elapsedSeconds < 60 {
+        return "gerade eben"
+    }
+
+    let elapsedMinutes = elapsedSeconds / 60
+    if elapsedMinutes < 60 {
+        return "\(elapsedMinutes) Min."
+    }
+
+    let elapsedHours = elapsedMinutes / 60
+    if elapsedHours < 24 {
+        return "\(elapsedHours) Std."
+    }
+
+    let elapsedDays = elapsedHours / 24
+    if elapsedDays < 30 {
+        return elapsedDays == 1 ? "1 Tag" : "\(elapsedDays) Tage"
+    }
+
+    let elapsedMonths = elapsedDays / 30
+    if elapsedMonths < 12 {
+        return "\(elapsedMonths) Mon."
+    }
+
+    let elapsedYears = elapsedDays / 365
+    return "\(elapsedYears) J."
+}
+
 private func formattedLiveTimestamp(_ value: String) -> String? {
     let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !raw.isEmpty else { return nil }
-
-    let preciseFormatter = ISO8601DateFormatter()
-    preciseFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let fallbackFormatter = ISO8601DateFormatter()
-    fallbackFormatter.formatOptions = [.withInternetDateTime]
-
-    let date = preciseFormatter.date(from: raw) ?? fallbackFormatter.date(from: raw)
-    guard let date else { return raw }
+    guard let date = parsedLiveDate(raw) else { return raw }
 
     let output = DateFormatter()
     output.locale = Locale(identifier: "de_DE")
     output.dateStyle = .short
     output.timeStyle = .short
     return output.string(from: date)
+}
+
+private func parsedLiveDate(_ value: String) -> Date? {
+    let preciseFormatter = ISO8601DateFormatter()
+    preciseFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let fallbackFormatter = ISO8601DateFormatter()
+    fallbackFormatter.formatOptions = [.withInternetDateTime]
+    return preciseFormatter.date(from: value) ?? fallbackFormatter.date(from: value)
 }
 
 private func formattedEVSECode(_ value: String) -> String? {

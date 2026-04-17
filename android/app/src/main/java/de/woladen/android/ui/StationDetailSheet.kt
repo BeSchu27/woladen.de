@@ -462,7 +462,12 @@ private fun compactLiveProvider(sourceLabel: String?): String? {
             else -> provider
         }
     }
-    if (candidate.startsWith("Live-Stand") || candidate.startsWith("Stand ")) {
+    if (
+        candidate.startsWith("Live-Stand") ||
+        candidate.startsWith("Stand ") ||
+        candidate.startsWith("Live seit ") ||
+        candidate.startsWith("Seit ")
+    ) {
         return null
     }
     return candidate

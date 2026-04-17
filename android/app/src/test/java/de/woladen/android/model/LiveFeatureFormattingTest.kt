@@ -1,10 +1,22 @@
 package de.woladen.android.model
 
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveFeatureFormattingTest {
+    @Test
+    fun elapsedLiveTimeFormatsRecentMinutes() {
+        val now = Instant.parse("2026-04-17T15:03:18Z")
+        assertEquals("13 Min.", formatElapsedLiveTime("2026-04-17T14:50:00Z", now))
+    }
+
+    @Test
+    fun elapsedLiveTimeFormatsFreshUpdates() {
+        val now = Instant.parse("2026-04-17T15:03:18Z")
+        assertEquals("gerade eben", formatElapsedLiveTime("2026-04-17T15:03:00Z", now))
+    }
 
     @Test
     fun liveSummaryOverridesBundledOccupancyAndPrice() {
