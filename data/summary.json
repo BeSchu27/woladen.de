@@ -1,17 +1,17 @@
 {
   "run": {
-    "started_at": "2026-04-17T01:37:05+00:00",
-    "finished_at": "2026-04-17T03:03:32+00:00"
+    "started_at": "2026-04-18T01:37:21+00:00",
+    "finished_at": "2026-04-18T03:01:43+00:00"
   },
   "source": {
     "source_url": "https://data.bundesnetzagentur.de/Bundesnetzagentur/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenregister_BNetzA_2026-03-25.csv",
-    "fetched_at": "2026-04-17T01:37:42.829916+00:00",
+    "fetched_at": "2026-04-18T01:38:07.397441+00:00",
     "bytes": 48836056,
     "content_type": "application/octet-stream",
     "bnetza_api_ladestation_source": {
       "source_url": "https://d1269bxe5ubfat.cloudfront.net/bnetza-api/data/bnetza_api_ladestation000.csv?v=1",
       "label": "bnetza_api_ladestation",
-      "fetched_at": "2026-04-17T01:37:50.235919+00:00",
+      "fetched_at": "2026-04-18T01:38:14.804608+00:00",
       "error": "403 Client Error: Forbidden for url: https://d1269bxe5ubfat.cloudfront.net/bnetza-api/data/bnetza_api_ladestation000.csv?v=1",
       "unavailable": true
     }
@@ -27,23 +27,23 @@
   },
   "records": {
     "raw_rows": 108577,
-    "fast_chargers_total": 16347,
-    "stations_with_live_occupancy": 282,
-    "stations_with_static_details": 9735,
-    "stations_with_price": 4005,
-    "stations_with_opening_hours": 11589,
-    "stations_with_helpdesk": 5373,
-    "stations_with_amenities": 14965,
     "full_registry_stations_total": 71652,
-    "full_registry_active_stations_total": 71635
+    "full_registry_active_stations_total": 71635,
+    "fast_chargers_total": 16347,
+    "stations_with_live_occupancy": 280,
+    "stations_with_static_details": 9780,
+    "stations_with_price": 3999,
+    "stations_with_opening_hours": 11594,
+    "stations_with_helpdesk": 5378,
+    "stations_with_amenities": 14965
   },
   "occupancy_lookup": {
-    "sources_discovered": 22,
-    "sources_used": 20,
-    "locations_scanned": 43960,
+    "sources_discovered": 23,
+    "sources_used": 21,
+    "locations_scanned": 44679,
     "matched_locations": 266,
-    "matched_stations": 282,
-    "matched_evses": 1392,
+    "matched_stations": 280,
+    "matched_evses": 1471,
     "errors": [
       "elu_mobility: mtls_subscription: Expecting value: line 1 column 1 (char 0)",
       "smatrics: mtls_subscription: Expecting value: line 1 column 1 (char 0)"
@@ -53,9 +53,9 @@
         "uid": "chargecloud_ludwigsburg",
         "name": "Stadtwerke Ludwigsburg",
         "locations_scanned": 130,
-        "matched_locations": 1,
-        "matched_stations": 1,
-        "matched_evses": 3
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0
       },
       {
         "uid": "chargecloud_pforzheim",
@@ -69,9 +69,9 @@
         "uid": "chargecloud_stuttgart",
         "name": "Stadtwerke Stuttgart",
         "locations_scanned": 270,
-        "matched_locations": 3,
+        "matched_locations": 4,
         "matched_stations": 3,
-        "matched_evses": 16
+        "matched_evses": 71
       },
       {
         "uid": "chargecloud_tuebingen",
@@ -84,7 +84,7 @@
       {
         "uid": "datex2_enbw",
         "name": "EnBW Datex II",
-        "locations_scanned": 2502,
+        "locations_scanned": 2506,
         "matched_locations": 225,
         "matched_stations": 241,
         "matched_evses": 1289
@@ -111,12 +111,12 @@
         "locations_scanned": 176,
         "matched_locations": 28,
         "matched_stations": 28,
-        "matched_evses": 67
+        "matched_evses": 87
       },
       {
         "uid": "chargecloud",
         "name": "chargecloud",
-        "locations_scanned": 5092,
+        "locations_scanned": 5145,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -124,7 +124,7 @@
       {
         "uid": "eco_movement",
         "name": "eco movement",
-        "locations_scanned": 12803,
+        "locations_scanned": 12859,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -140,15 +140,15 @@
       {
         "uid": "enbwmobility",
         "name": "enbwmobility",
-        "locations_scanned": 2502,
-        "matched_locations": 0,
-        "matched_stations": 0,
-        "matched_evses": 0
+        "locations_scanned": 2506,
+        "matched_locations": 1,
+        "matched_stations": 1,
+        "matched_evses": 8
       },
       {
         "uid": "eround",
         "name": "eround",
-        "locations_scanned": 4475,
+        "locations_scanned": 4478,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -156,7 +156,7 @@
       {
         "uid": "ladenetz_de_ladestationsdaten",
         "name": "ladenetz de ladestationsdaten",
-        "locations_scanned": 2086,
+        "locations_scanned": 2088,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -164,7 +164,15 @@
       {
         "uid": "m8mit",
         "name": "m8mit",
-        "locations_scanned": 147,
+        "locations_scanned": 150,
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0
+      },
+      {
+        "uid": "monta",
+        "name": "monta",
+        "locations_scanned": 589,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -181,9 +189,9 @@
         "uid": "tesla",
         "name": "tesla",
         "locations_scanned": 320,
-        "matched_locations": 1,
-        "matched_stations": 1,
-        "matched_evses": 1
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0
       },
       {
         "uid": "vaylens",
@@ -196,7 +204,7 @@
       {
         "uid": "wirelane",
         "name": "wirelane",
-        "locations_scanned": 1740,
+        "locations_scanned": 1745,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -212,14 +220,14 @@
     ]
   },
   "static_detail_lookup": {
-    "offers_discovered": 50,
-    "static_offers_considered": 25,
+    "offers_discovered": 48,
+    "static_offers_considered": 23,
     "sources_used": 14,
-    "matched_sites": 10055,
-    "matched_stations": 9735,
-    "stations_with_price": 4005,
-    "stations_with_opening_hours": 11589,
-    "stations_with_helpdesk": 5373,
+    "matched_sites": 10100,
+    "matched_stations": 9780,
+    "stations_with_price": 3999,
+    "stations_with_opening_hours": 11594,
+    "stations_with_helpdesk": 5378,
     "errors": [
       "951517095896416256: direct_access_url: 403 Client Error: Forbidden for url: https://d1269bxe5ubfat.cloudfront.net/bnetza-api/data/bnetza_api_ladepunkt000.csv?v=1",
       "842113170303512576: direct_access_url: 403 Client Error: Forbidden for url: https://d1269bxe5ubfat.cloudfront.net/bnetza-lsr/data/ladepunktFactTable.csv?v=1"
@@ -290,8 +298,8 @@
         "status": "ok",
         "payload_kind": "datex",
         "sites_scanned": 10255,
-        "matched_sites": 919,
-        "matched_stations": 919
+        "matched_sites": 918,
+        "matched_stations": 918
       },
       {
         "uid": "mobilithek_chargecloud_static",
@@ -301,25 +309,15 @@
         "access_mode": "noauth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 5092,
-        "matched_sites": 618,
-        "matched_stations": 618
+        "sites_scanned": 5145,
+        "matched_sites": 621,
+        "matched_stations": 621
       },
       {
         "uid": "mobilithek_volkswagencharginggroup_static",
         "publication_id": "976221024898781184",
         "title": "AFIR-recharging-stat-VolkswagenChargingGroup",
         "publisher": "Volkswagen Group Charging",
-        "access_mode": "auth",
-        "status": "not_accessible",
-        "matched_sites": 0,
-        "matched_stations": 0
-      },
-      {
-        "uid": "mobilithek_ampeco_static",
-        "publication_id": "973272258671685632",
-        "title": "AFIR-recharging-stat-AMPECO",
-        "publisher": "Аmpeco Ltd.",
         "access_mode": "auth",
         "status": "not_accessible",
         "matched_sites": 0,
@@ -357,9 +355,9 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 147,
-        "matched_sites": 15,
-        "matched_stations": 15
+        "sites_scanned": 150,
+        "matched_sites": 16,
+        "matched_stations": 16
       },
       {
         "uid": "mobilithek_pump_static",
@@ -382,8 +380,8 @@
         "status": "ok",
         "payload_kind": "datex",
         "sites_scanned": 589,
-        "matched_sites": 170,
-        "matched_stations": 170
+        "matched_sites": 171,
+        "matched_stations": 171
       },
       {
         "uid": "mobilithek_eround_static",
@@ -393,9 +391,9 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 4475,
-        "matched_sites": 1648,
-        "matched_stations": 1648
+        "sites_scanned": 4478,
+        "matched_sites": 1649,
+        "matched_stations": 1649
       },
       {
         "uid": "mobilithek_eco_movement_static",
@@ -405,9 +403,9 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 12803,
-        "matched_sites": 4069,
-        "matched_stations": 4011
+        "sites_scanned": 12859,
+        "matched_sites": 4108,
+        "matched_stations": 4050
       },
       {
         "uid": "mobilithek_bundesnetzagentur_liste_der_lades_ulen_aus_webserviceschnittstelle_static",
@@ -451,7 +449,7 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 2502,
+        "sites_scanned": 2506,
         "matched_sites": 1739,
         "matched_stations": 1739
       },
@@ -463,9 +461,9 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 2086,
-        "matched_sites": 218,
-        "matched_stations": 218
+        "sites_scanned": 2088,
+        "matched_sites": 219,
+        "matched_stations": 219
       },
       {
         "uid": "mobilithek_wirelane_static",
@@ -475,7 +473,7 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 1740,
+        "sites_scanned": 1745,
         "matched_sites": 61,
         "matched_stations": 61
       },
@@ -499,17 +497,6 @@
         "error": "direct_access_url: 403 Client Error: Forbidden for url: https://d1269bxe5ubfat.cloudfront.net/bnetza-lsr/data/ladepunktFactTable.csv?v=1",
         "matched_sites": 0,
         "matched_stations": 0
-      },
-      {
-        "uid": "mobilithek_geb_ndelte_daten_e_lades_ulen_baden_w_rttemberg_static",
-        "publication_id": "-2035239451501556619",
-        "title": "Gebündelte Daten E-Ladesäulen Baden-Württemberg",
-        "publisher": "MobiData BW",
-        "access_mode": "direct_access_url",
-        "status": "unsupported_payload",
-        "payload_kind": "datex",
-        "matched_sites": 0,
-        "matched_stations": 0
       }
     ]
   },
@@ -522,15 +509,15 @@
     "lookup_errors": 0,
     "cache_entries": 0,
     "osm_pbf_path": "data/germany-latest.osm.pbf",
-    "osm_pbf_bytes": 4740812965,
+    "osm_pbf_bytes": 4741531667,
     "osm_pbf_downloaded": true,
-    "osm_pbf_points": 332571,
-    "osm_pbf_grid_cells": 119635,
-    "osm_pbf_nodes_seen": 431959299,
-    "osm_pbf_ways_seen": 69948692,
-    "osm_pbf_relations_seen": 887740,
-    "osm_pbf_nodes_kept": 204775,
-    "osm_pbf_ways_kept": 127796
+    "osm_pbf_points": 332576,
+    "osm_pbf_grid_cells": 119634,
+    "osm_pbf_nodes_seen": 432007955,
+    "osm_pbf_ways_seen": 69956053,
+    "osm_pbf_relations_seen": 887816,
+    "osm_pbf_nodes_kept": 204782,
+    "osm_pbf_ways_kept": 127794
   },
   "operators": {
     "min_stations": 100,
