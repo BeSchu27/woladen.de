@@ -55,12 +55,7 @@ jobs:
             TARGET_DATE="$REQUESTED_DATE"
             IS_DEFAULT_TARGET="false"
           else
-            TARGET_DATE=$(python - <<'PY'
-            from datetime import datetime, timedelta
-            from zoneinfo import ZoneInfo
-            print((datetime.now(ZoneInfo("Europe/Berlin")).date() - timedelta(days=1)).isoformat())
-            PY
-            )
+            TARGET_DATE=$(python -c 'from datetime import datetime, timedelta; from zoneinfo import ZoneInfo; print((datetime.now(ZoneInfo("Europe/Berlin")).date() - timedelta(days=1)).isoformat())')
             IS_DEFAULT_TARGET="true"
           fi
 
