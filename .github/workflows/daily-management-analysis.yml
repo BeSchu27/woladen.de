@@ -2,6 +2,11 @@ name: Daily Management Analysis
 
 on:
   workflow_dispatch:
+    inputs:
+      date:
+        description: Archive day in YYYY-MM-DD. Defaults to the prior day in Europe/Berlin when empty.
+        required: false
+        type: string
   schedule:
     - cron: "0 23 * * *"
     - cron: "0 0 * * *"
@@ -39,6 +44,36 @@ jobs:
             echo "Skipping scheduled run outside 01:00 Europe/Berlin (current hour: $BERLIN_HOUR)."
           fi
 
+      - name: Resolve target date
+        id: target_date
+        if: steps.berlin_gate.outputs.should_run == 'true'
+        shell: bash
+        env:
+          REQUESTED_DATE: ${{ github.event.inputs.date }}
+        run: |
+          if [ -n "$REQUESTED_DATE" ]; then
+            TARGET_DATE="$REQUESTED_DATE"
+            IS_DEFAULT_TARGET="false"
+          else
+            TARGET_DATE=$(python - <<'PY'
+            from datetime import datetime, timedelta
+            from zoneinfo import ZoneInfo
+            print((datetime.now(ZoneInfo("Europe/Berlin")).date() - timedelta(days=1)).isoformat())
+            PY
+            )
+            IS_DEFAULT_TARGET="true"
+          fi
+
+          python - "$TARGET_DATE" <<'PY'
+          import sys
+          from datetime import date
+          date.fromisoformat(sys.argv[1])
+          PY
+
+          echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "is_default_target=$IS_DEFAULT_TARGET" >> "$GITHUB_OUTPUT"
+          echo "TARGET_DATE=$TARGET_DATE" >> "$GITHUB_ENV"
+
       - name: Checkout
         if: steps.berlin_gate.outputs.should_run == 'true'
         uses: actions/checkout@v4
@@ -70,17 +105,15 @@ jobs:
           chmod 600 tmp/hf_private
 
       - name: Wait for prior-day archive
-        if: steps.berlin_gate.outputs.should_run == 'true'
+        if: steps.berlin_gate.outputs.should_run == 'true' && steps.target_date.outputs.is_default_target == 'true'
         run: |
           python - <<'PY'
           import time
-          from datetime import datetime, timedelta
-          from zoneinfo import ZoneInfo
 
           from backend.archive import DailyResponseArchiveDownloader
           from backend.config import AppConfig
 
-          target_date = datetime.now(ZoneInfo("Europe/Berlin")).date() - timedelta(days=1)
+          target_date = "${{ steps.target_date.outputs.target_date }}"
           wait_minutes = 240
           interval_seconds = 300
           attempts = max(1, wait_minutes * 60 // interval_seconds)
@@ -91,31 +124,23 @@ jobs:
                   str(row.get("target_date") or "")
                   for row in downloader.list_available_archives()
               }
-              if target_date.isoformat() in available_dates:
-                  print(f"{target_date.isoformat()} archive is available.")
+              if target_date in available_dates:
+                  print(f"{target_date} archive is available.")
                   break
               if attempt == attempts:
                   raise SystemExit(
-                      f"{target_date.isoformat()} archive still unavailable after {wait_minutes} minutes."
+                      f"{target_date} archive still unavailable after {wait_minutes} minutes."
                   )
               print(
-                  f"{target_date.isoformat()} archive not published yet "
+                  f"{target_date} archive not published yet "
                   f"(attempt {attempt}/{attempts}); retrying in {interval_seconds // 60} minutes."
               )
               time.sleep(interval_seconds)
           PY
 
-      - name: Download prior-day archive
+      - name: Download requested archive
         if: steps.berlin_gate.outputs.should_run == 'true'
-        run: |
-          TARGET_DATE=$(python - <<'PY'
-          from datetime import datetime, timedelta
-          from zoneinfo import ZoneInfo
-          print((datetime.now(ZoneInfo("Europe/Berlin")).date() - timedelta(days=1)).isoformat())
-          PY
-          )
-          echo "TARGET_DATE=$TARGET_DATE" >> "$GITHUB_ENV"
-          python scripts/live_download_archive.py --date "$TARGET_DATE"
+        run: python scripts/live_download_archive.py --date "$TARGET_DATE"
 
       - name: Generate management snapshot
         if: steps.berlin_gate.outputs.should_run == 'true'
