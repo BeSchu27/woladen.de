@@ -6,12 +6,15 @@ import json
 import os
 import sqlite3
 import tarfile
+import time
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import backend.fetcher as fetcher_module
+import backend.store as store_module
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -22,6 +25,7 @@ from backend.datex import decode_json_payload, extract_dynamic_facts
 from backend.fetcher import CurlFetcher
 from backend.loaders import load_evse_matches, load_provider_targets, load_site_matches
 from backend.models import FetchResponse
+from backend.receipt_queue import ReceiptQueue
 from backend.service import IngestionService
 from backend.store import LiveStore, utc_now_iso
 from backend.subscriptions import (
@@ -2016,6 +2020,69 @@ def test_api_push_endpoint_accepts_get_post_and_head(app_config):
     evse = store.get_evse_detail("ampeco", "DEQWEE1")
     assert evse is not None
     assert evse["current"]["price_display"] == "0,81 €/kWh"
+
+
+def test_store_retries_retryable_sqlite_lock_errors(app_config, monkeypatch):
+    config = replace(app_config, sqlite_lock_retry_seconds=0.5)
+    store = LiveStore(config)
+    sleep_calls: list[float] = []
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(store_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    def flaky_operation():
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert store._run_write_with_retry(flaky_operation) == "ok"
+    assert attempts["count"] == 3
+    assert sleep_calls
+
+
+def test_store_does_not_retry_non_lock_sqlite_errors(app_config, monkeypatch):
+    config = replace(app_config, sqlite_lock_retry_seconds=0.5)
+    store = LiveStore(config)
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(store_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    with pytest.raises(sqlite3.OperationalError, match="syntax error"):
+        store._run_write_with_retry(lambda: (_ for _ in ()).throw(sqlite3.OperationalError("syntax error")))
+
+    assert sleep_calls == []
+
+
+def test_receipt_queue_prunes_old_done_and_failed_files(app_config):
+    config = replace(
+        app_config,
+        queue_cleanup_interval_seconds=0,
+        queue_done_retention_seconds=60,
+        queue_failed_retention_seconds=60,
+    )
+    queue = ReceiptQueue(config)
+    queue.initialize()
+
+    old_done = queue.done_dir / "old-done.json"
+    fresh_done = queue.done_dir / "fresh-done.json"
+    old_failed = queue.failed_dir / "old-failed.json"
+    fresh_failed = queue.failed_dir / "fresh-failed.json"
+
+    for path in (old_done, fresh_done, old_failed, fresh_failed):
+        path.write_text("{}\n", encoding="utf-8")
+
+    stale_timestamp = time.time() - 3600
+    os.utime(old_done, (stale_timestamp, stale_timestamp))
+    os.utime(old_failed, (stale_timestamp, stale_timestamp))
+
+    result = queue.cleanup_completed(force=True)
+
+    assert result == {"done_deleted": 1, "failed_deleted": 1}
+    assert old_done.exists() is False
+    assert old_failed.exists() is False
+    assert fresh_done.exists() is True
+    assert fresh_failed.exists() is True
 
 
 def test_push_ingestion_writes_timestamped_request_logs(app_config):

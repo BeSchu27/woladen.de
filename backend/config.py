@@ -155,8 +155,20 @@ class AppConfig:
     sqlite_busy_timeout_ms: int = field(
         default_factory=lambda: int(os.environ.get("WOLADEN_LIVE_SQLITE_BUSY_TIMEOUT_MS", "5000"))
     )
+    sqlite_lock_retry_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("WOLADEN_LIVE_SQLITE_LOCK_RETRY_SECONDS", "30"))
+    )
     queue_idle_sleep_seconds: float = field(
         default_factory=lambda: float(os.environ.get("WOLADEN_LIVE_QUEUE_IDLE_SLEEP_SECONDS", "1"))
+    )
+    queue_cleanup_interval_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("WOLADEN_LIVE_QUEUE_CLEANUP_INTERVAL_SECONDS", "300"))
+    )
+    queue_done_retention_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("WOLADEN_LIVE_QUEUE_DONE_RETENTION_SECONDS", "86400"))
+    )
+    queue_failed_retention_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("WOLADEN_LIVE_QUEUE_FAILED_RETENTION_SECONDS", "604800"))
     )
     archive_timezone_name: str = field(
         default_factory=lambda: str(os.environ.get("WOLADEN_LIVE_ARCHIVE_TIMEZONE", "Europe/Berlin")).strip()

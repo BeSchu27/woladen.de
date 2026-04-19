@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -70,6 +71,7 @@ class ReceiptQueue:
         self.processing_dir = self.root_dir / "processing"
         self.done_dir = self.root_dir / "done"
         self.failed_dir = self.root_dir / "failed"
+        self._next_cleanup_at_monotonic = 0.0
 
     def initialize(self) -> None:
         for path in (self.pending_dir, self.processing_dir, self.done_dir, self.failed_dir):
@@ -127,6 +129,7 @@ class ReceiptQueue:
         self.initialize()
         target_path = self.done_dir / claim_path.name
         claim_path.replace(target_path)
+        self.cleanup_completed()
 
     def mark_failed(self, task: ReceiptTask, *, error_text: str = "") -> None:
         claim_path = self._claim_path(task)
@@ -137,6 +140,25 @@ class ReceiptQueue:
         target_path = self.failed_dir / claim_path.name
         self._write_json(target_path, payload)
         claim_path.unlink(missing_ok=True)
+        self.cleanup_completed()
+
+    def cleanup_completed(self, *, force: bool = False) -> dict[str, int]:
+        self.initialize()
+        now_monotonic = time.monotonic()
+        if not force and now_monotonic < self._next_cleanup_at_monotonic:
+            return {"done_deleted": 0, "failed_deleted": 0}
+        self._next_cleanup_at_monotonic = now_monotonic + max(self.config.queue_cleanup_interval_seconds, 0.0)
+
+        return {
+            "done_deleted": self._prune_directory(
+                self.done_dir,
+                retention_seconds=float(self.config.queue_done_retention_seconds),
+            ),
+            "failed_deleted": self._prune_directory(
+                self.failed_dir,
+                retention_seconds=float(self.config.queue_failed_retention_seconds),
+            ),
+        }
 
     def stats(self) -> dict[str, Any]:
         self.initialize()
@@ -177,3 +199,18 @@ class ReceiptQueue:
         temp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temp_path.replace(target_path)
+
+    def _prune_directory(self, directory: Path, *, retention_seconds: float) -> int:
+        if retention_seconds <= 0:
+            return 0
+        cutoff = time.time() - retention_seconds
+        deleted = 0
+        for path in directory.glob("*.json"):
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+            except FileNotFoundError:
+                continue
+            path.unlink(missing_ok=True)
+            deleted += 1
+        return deleted

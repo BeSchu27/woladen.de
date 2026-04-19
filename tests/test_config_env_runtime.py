@@ -77,3 +77,17 @@ def test_app_config_reuses_custom_chargers_catalog_as_full_registry_default(tmp_
 
     assert config.chargers_csv_path == custom_catalog
     assert config.full_chargers_csv_path == custom_catalog
+
+
+def test_app_config_reads_sqlite_retry_and_queue_retention_env(monkeypatch):
+    monkeypatch.setenv("WOLADEN_LIVE_SQLITE_LOCK_RETRY_SECONDS", "42")
+    monkeypatch.setenv("WOLADEN_LIVE_QUEUE_CLEANUP_INTERVAL_SECONDS", "123")
+    monkeypatch.setenv("WOLADEN_LIVE_QUEUE_DONE_RETENTION_SECONDS", "456")
+    monkeypatch.setenv("WOLADEN_LIVE_QUEUE_FAILED_RETENTION_SECONDS", "789")
+
+    config = AppConfig()
+
+    assert config.sqlite_lock_retry_seconds == 42.0
+    assert config.queue_cleanup_interval_seconds == 123.0
+    assert config.queue_done_retention_seconds == 456.0
+    assert config.queue_failed_retention_seconds == 789.0

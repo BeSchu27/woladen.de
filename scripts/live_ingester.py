@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -14,6 +15,37 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.config import AppConfig
 from backend.service import IngestionService
+
+
+def _is_retryable_sqlite_lock(exc: sqlite3.OperationalError) -> bool:
+    text = str(exc).strip().lower()
+    return "locked" in text or "busy" in text
+
+
+def _sqlite_lock_sleep_seconds(service: IngestionService, minimum_sleep_seconds: float = 0.0) -> float:
+    base_sleep_seconds = max(float(service.config.sqlite_busy_timeout_ms) / 1000.0, 1.0)
+    if minimum_sleep_seconds > 0:
+        return max(base_sleep_seconds, minimum_sleep_seconds)
+    return base_sleep_seconds
+
+
+def receive_next_provider_resiliently(
+    service: IngestionService,
+    *,
+    bootstrap: bool = False,
+    minimum_sleep_seconds: float = 0.0,
+) -> tuple[dict | None, float | None]:
+    try:
+        return service.receive_next_provider(bootstrap=bootstrap), None
+    except sqlite3.OperationalError as exc:
+        if not _is_retryable_sqlite_lock(exc):
+            raise
+        sleep_seconds = _sqlite_lock_sleep_seconds(service, minimum_sleep_seconds)
+        return {
+            "result": "sqlite_locked",
+            "error": str(exc),
+            "sleep_seconds": sleep_seconds,
+        }, sleep_seconds
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,9 +76,16 @@ def main() -> None:
     if args.loop:
         bootstrap_loop_if_missing(service)
         while True:
-            result = service.receive_next_provider(bootstrap=False)
+            result, transient_sleep_seconds = receive_next_provider_resiliently(
+                service,
+                bootstrap=False,
+                minimum_sleep_seconds=args.sleep_seconds,
+            )
             if result is not None:
                 print(json.dumps(result))
+                if transient_sleep_seconds is not None:
+                    time.sleep(transient_sleep_seconds)
+                    continue
                 if args.sleep_seconds > 0:
                     time.sleep(args.sleep_seconds)
                 continue

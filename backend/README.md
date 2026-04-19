@@ -164,6 +164,10 @@ The backend uses `AppConfig` in [config.py](/Users/raphaelvolz/Github/woladen.de
 - `WOLADEN_LIVE_POLL_INTERVAL_UNCHANGED_MAX_SECONDS`: backoff cap for unchanged snapshot payloads
 - `WOLADEN_LIVE_POLL_IDLE_SLEEP_MAX_SECONDS`: max sleep while no provider is due
 - `WOLADEN_LIVE_SQLITE_BUSY_TIMEOUT_MS`: SQLite busy timeout
+- `WOLADEN_LIVE_SQLITE_LOCK_RETRY_SECONDS`: additional retry budget for transient SQLite lock contention on receipt-path writes
+- `WOLADEN_LIVE_QUEUE_CLEANUP_INTERVAL_SECONDS`: how often the queue worker prunes completed task files
+- `WOLADEN_LIVE_QUEUE_DONE_RETENTION_SECONDS`: retention window for processed queue task files
+- `WOLADEN_LIVE_QUEUE_FAILED_RETENTION_SECONDS`: retention window for failed queue task files
 - `WOLADEN_LIVE_ARCHIVE_TIMEZONE`: timezone for archive day grouping
 - `WOLADEN_LIVE_HF_ARCHIVE_REPO_ID`, `WOLADEN_LIVE_HF_ARCHIVE_REPO_TYPE`, `WOLADEN_LIVE_HF_ARCHIVE_PATH_PREFIX`, `WOLADEN_LIVE_HF_ARCHIVE_TOKEN_FILE`: optional Hugging Face archive upload config
 

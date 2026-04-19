@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,12 @@ from .models import DynamicFact, EvseMatch, PriceSnapshot, ProviderTarget, SiteM
 
 LIVE_JSON_FIELDS = ("next_available_charging_slots", "supplemental_facility_status")
 DESCRIPTIVE_PRICE_FIELDS = ("price_energy_eur_kwh_min", "price_energy_eur_kwh_max")
+SQLITE_LOCK_ERROR_MARKERS = (
+    "database is locked",
+    "database table is locked",
+    "database schema is locked",
+    "database is busy",
+)
 
 
 def utc_now_iso() -> str:
@@ -60,7 +67,8 @@ class LiveStore:
 
     @contextmanager
     def connection(self):
-        conn = sqlite3.connect(self.config.db_path)
+        timeout_seconds = max(float(self.config.sqlite_busy_timeout_ms) / 1000.0, 1.0)
+        conn = sqlite3.connect(self.config.db_path, timeout=timeout_seconds)
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout={self.config.sqlite_busy_timeout_ms}")
         conn.execute("PRAGMA journal_mode=WAL")
@@ -70,6 +78,31 @@ class LiveStore:
             conn.commit()
         finally:
             conn.close()
+
+    def _is_retryable_sqlite_error(self, exc: sqlite3.OperationalError) -> bool:
+        text = str(exc).strip().lower()
+        return any(marker in text for marker in SQLITE_LOCK_ERROR_MARKERS)
+
+    def _run_write_with_retry(self, operation):
+        retry_window_seconds = max(float(self.config.sqlite_lock_retry_seconds), 0.0)
+        deadline = time.monotonic() + retry_window_seconds
+        attempt = 0
+
+        while True:
+            try:
+                return operation()
+            except sqlite3.OperationalError as exc:
+                if not self._is_retryable_sqlite_error(exc):
+                    raise
+                if retry_window_seconds <= 0.0:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise
+                sleep_seconds = min(0.25 * (2**attempt), 2.0, remaining)
+                if sleep_seconds > 0.0:
+                    time.sleep(sleep_seconds)
+                attempt += 1
 
     def initialize(self) -> None:
         self.config.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -894,6 +927,13 @@ class LiveStore:
 
     def start_poll_run(self, provider_uid: str) -> int:
         started_at = utc_now_iso()
+        return int(
+            self._run_write_with_retry(
+                lambda: self._start_poll_run_once(provider_uid, started_at=started_at)
+            )
+        )
+
+    def _start_poll_run_once(self, provider_uid: str, *, started_at: str) -> int:
         with self.connection() as conn:
             cursor = conn.execute(
                 "INSERT INTO provider_poll_runs (provider_uid, started_at) VALUES (?, ?)",
@@ -914,6 +954,35 @@ class LiveStore:
         request_query: str = "",
     ) -> int:
         started_at = utc_now_iso()
+        return int(
+            self._run_write_with_retry(
+                lambda: self._start_push_run_once(
+                    provider_uid,
+                    subscription_id=subscription_id,
+                    publication_id=publication_id,
+                    started_at=started_at,
+                    received_at=received_at,
+                    content_type=content_type,
+                    content_encoding=content_encoding,
+                    request_path=request_path,
+                    request_query=request_query,
+                )
+            )
+        )
+
+    def _start_push_run_once(
+        self,
+        provider_uid: str,
+        *,
+        subscription_id: str,
+        publication_id: str,
+        started_at: str,
+        received_at: str,
+        content_type: str,
+        content_encoding: str,
+        request_path: str,
+        request_query: str,
+    ) -> int:
         with self.connection() as conn:
             cursor = conn.execute(
                 """
@@ -955,6 +1024,43 @@ class LiveStore:
         changed_dropped_observation_count: int = 0,
     ) -> None:
         ended_text = ended_at or utc_now_iso()
+        self._run_write_with_retry(
+            lambda: self._finish_poll_run_once(
+                poll_run_id,
+                provider_uid=provider_uid,
+                result=result,
+                fetched_at=fetched_at,
+                ended_text=ended_text,
+                http_status=http_status,
+                error_text=error_text,
+                payload_sha256=payload_sha256,
+                observation_count=observation_count,
+                mapped_observation_count=mapped_observation_count,
+                dropped_observation_count=dropped_observation_count,
+                changed_observation_count=changed_observation_count,
+                changed_mapped_observation_count=changed_mapped_observation_count,
+                changed_dropped_observation_count=changed_dropped_observation_count,
+            )
+        )
+
+    def _finish_poll_run_once(
+        self,
+        poll_run_id: int,
+        *,
+        provider_uid: str,
+        result: str,
+        fetched_at: str,
+        ended_text: str,
+        http_status: int,
+        error_text: str,
+        payload_sha256: str,
+        observation_count: int,
+        mapped_observation_count: int,
+        dropped_observation_count: int,
+        changed_observation_count: int,
+        changed_mapped_observation_count: int,
+        changed_dropped_observation_count: int,
+    ) -> None:
         with self.connection() as conn:
             provider_row = conn.execute("SELECT * FROM providers WHERE provider_uid = ?", (provider_uid,)).fetchone()
             provider = dict(provider_row) if provider_row else {}
@@ -1022,6 +1128,29 @@ class LiveStore:
         ended_text = utc_now_iso()
         provider = self.get_provider(provider_uid) or {}
         base_next_poll_at = _shift_iso(fetched_at or ended_text, self._base_poll_interval_seconds(provider))
+        self._run_write_with_retry(
+            lambda: self._queue_poll_run_once(
+                poll_run_id,
+                provider_uid=provider_uid,
+                fetched_at=fetched_at,
+                ended_text=ended_text,
+                http_status=http_status,
+                payload_sha256=payload_sha256,
+                base_next_poll_at=base_next_poll_at,
+            )
+        )
+
+    def _queue_poll_run_once(
+        self,
+        poll_run_id: int,
+        *,
+        provider_uid: str,
+        fetched_at: str,
+        ended_text: str,
+        http_status: int,
+        payload_sha256: str,
+        base_next_poll_at: str,
+    ) -> None:
         with self.connection() as conn:
             conn.execute(
                 """
@@ -1058,6 +1187,43 @@ class LiveStore:
         changed_dropped_observation_count: int = 0,
     ) -> None:
         ended_text = utc_now_iso()
+        self._run_write_with_retry(
+            lambda: self._complete_poll_run_once(
+                poll_run_id,
+                provider_uid=provider_uid,
+                result=result,
+                fetched_at=fetched_at,
+                ended_text=ended_text,
+                http_status=http_status,
+                error_text=error_text,
+                payload_sha256=payload_sha256,
+                observation_count=observation_count,
+                mapped_observation_count=mapped_observation_count,
+                dropped_observation_count=dropped_observation_count,
+                changed_observation_count=changed_observation_count,
+                changed_mapped_observation_count=changed_mapped_observation_count,
+                changed_dropped_observation_count=changed_dropped_observation_count,
+            )
+        )
+
+    def _complete_poll_run_once(
+        self,
+        poll_run_id: int,
+        *,
+        provider_uid: str,
+        result: str,
+        fetched_at: str,
+        ended_text: str,
+        http_status: int,
+        error_text: str,
+        payload_sha256: str,
+        observation_count: int,
+        mapped_observation_count: int,
+        dropped_observation_count: int,
+        changed_observation_count: int,
+        changed_mapped_observation_count: int,
+        changed_dropped_observation_count: int,
+    ) -> None:
         with self.connection() as conn:
             provider_row = conn.execute("SELECT * FROM providers WHERE provider_uid = ?", (provider_uid,)).fetchone()
             provider = dict(provider_row) if provider_row else {}
@@ -1136,6 +1302,41 @@ class LiveStore:
         changed_dropped_observation_count: int = 0,
     ) -> None:
         ended_text = ended_at or utc_now_iso()
+        self._run_write_with_retry(
+            lambda: self._finish_push_run_once(
+                push_run_id,
+                provider_uid=provider_uid,
+                result=result,
+                received_at=received_at,
+                ended_text=ended_text,
+                error_text=error_text,
+                payload_sha256=payload_sha256,
+                observation_count=observation_count,
+                mapped_observation_count=mapped_observation_count,
+                dropped_observation_count=dropped_observation_count,
+                changed_observation_count=changed_observation_count,
+                changed_mapped_observation_count=changed_mapped_observation_count,
+                changed_dropped_observation_count=changed_dropped_observation_count,
+            )
+        )
+
+    def _finish_push_run_once(
+        self,
+        push_run_id: int,
+        *,
+        provider_uid: str,
+        result: str,
+        received_at: str,
+        ended_text: str,
+        error_text: str,
+        payload_sha256: str,
+        observation_count: int,
+        mapped_observation_count: int,
+        dropped_observation_count: int,
+        changed_observation_count: int,
+        changed_mapped_observation_count: int,
+        changed_dropped_observation_count: int,
+    ) -> None:
         with self.connection() as conn:
             conn.execute(
                 """
@@ -1185,6 +1386,25 @@ class LiveStore:
         payload_sha256: str = "",
     ) -> None:
         ended_text = utc_now_iso()
+        self._run_write_with_retry(
+            lambda: self._queue_push_run_once(
+                push_run_id,
+                provider_uid=provider_uid,
+                received_at=received_at,
+                ended_text=ended_text,
+                payload_sha256=payload_sha256,
+            )
+        )
+
+    def _queue_push_run_once(
+        self,
+        push_run_id: int,
+        *,
+        provider_uid: str,
+        received_at: str,
+        ended_text: str,
+        payload_sha256: str,
+    ) -> None:
         with self.connection() as conn:
             conn.execute(
                 """
