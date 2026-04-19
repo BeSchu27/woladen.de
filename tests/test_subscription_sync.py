@@ -200,6 +200,8 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
     assert registry["edri"]["static_subscription_id"] == "980986204027498496"
     assert registry["edri"]["fetch_kind"] == "mtls_subscription"
     assert registry["edri"]["enabled"] is True
+    assert registry["edri"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["edri"]["push_fallback_after_seconds"] == 300
 
     assert registry["eco_movement"]["subscription_id"] == "980986321979551744"
     assert registry["eco_movement"]["fetch_kind"] == "mtls_subscription"
@@ -219,6 +221,8 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
     assert registry["tesla"]["static_subscription_id"] == "980986370583146496"
     assert "fetch_kind" not in registry["tesla"]
     assert "enabled" not in registry["tesla"]
+    assert registry["tesla"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["tesla"]["push_fallback_after_seconds"] == 300
 
     assert "subscription_id" not in registry["pump"]
     assert registry["pump"]["static_subscription_id"] == "980986256821039104"
@@ -228,6 +232,42 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
         registry["mobidata_bw_datex"]["static_fetch_url"]
         == "https://api.mobidata-bw.de/ocpdb/api/public/datex/v3.5/json/static"
     )
+
+
+def test_build_live_subscription_registry_applies_push_overrides_for_qwello_and_ladenetz():
+    offers = [
+        SubscriptionOffer(
+            provider_uid="qwello",
+            display_name="Qwello",
+            publisher="Qwello Deutschland GmbH",
+            publication_id="972966368902897664",
+            offer_title="AFIR-recharging-dyn-Qwello",
+            feed_kind="dynamic",
+            access_mode="noauth",
+        ),
+        SubscriptionOffer(
+            provider_uid="ladenetz_de_ladestationsdaten",
+            display_name="ladenetz.de Ladestationsdaten",
+            publisher="smartlab Innovationsgesellschaft mbH",
+            publication_id="903240716507836416",
+            offer_title="AFIR-recharging-dyn-ladenetz.de Ladestationsdaten",
+            feed_kind="dynamic",
+            access_mode="auth",
+        ),
+    ]
+
+    registry = build_live_subscription_registry(
+        offers,
+        [
+            {"id": "980986163111899136", "dataOfferId": "972966368902897664", "contractStatus": "ACTIVE"},
+            {"id": "980986407799205888", "dataOfferId": "903240716507836416", "contractStatus": "ACTIVE"},
+        ],
+    )
+
+    assert registry["qwello"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["qwello"]["push_fallback_after_seconds"] == 300
+    assert registry["ladenetz_de_ladestationsdaten"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["ladenetz_de_ladestationsdaten"]["push_fallback_after_seconds"] == 300
 
 
 def test_resolve_credentials_reads_secret_files(tmp_path: Path, monkeypatch):

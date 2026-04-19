@@ -23,6 +23,24 @@ ACTIVE_DYN_DATEX_SUBSCRIPTION_PROVIDER_UIDS = (
 # eliso uses the same authenticated Mobilithek subscription flow, but publishes a
 # generic JSON model instead of DATEX V3.
 ACTIVE_DYNAMIC_SUBSCRIPTION_PROVIDER_UIDS = ACTIVE_DYN_DATEX_SUBSCRIPTION_PROVIDER_UIDS + ("eliso",)
+LIVE_REGISTRY_PROVIDER_OVERRIDES: dict[str, dict[str, Any]] = {
+    "tesla": {
+        "delivery_mode": "push_with_poll_fallback",
+        "push_fallback_after_seconds": 300,
+    },
+    "edri": {
+        "delivery_mode": "push_with_poll_fallback",
+        "push_fallback_after_seconds": 300,
+    },
+    "qwello": {
+        "delivery_mode": "push_with_poll_fallback",
+        "push_fallback_after_seconds": 300,
+    },
+    "ladenetz_de_ladestationsdaten": {
+        "delivery_mode": "push_with_poll_fallback",
+        "push_fallback_after_seconds": 300,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -349,5 +367,10 @@ def build_live_subscription_registry(
             "static_access_mode": "noauth",
             "note": "Public DATEX II endpoints outside Mobilithek (since April 2026).",
         }
+
+    for provider_uid, overrides in LIVE_REGISTRY_PROVIDER_OVERRIDES.items():
+        if provider_uid not in merged_registry:
+            continue
+        merged_registry[provider_uid].update(overrides)
 
     return {provider_uid: merged_registry[provider_uid] for provider_uid in sorted(merged_registry)}
