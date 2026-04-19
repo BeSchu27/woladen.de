@@ -4,6 +4,8 @@ This repo now contains a local SQLite-based live-data backend for AFIR dynamic d
 SQLite holds the live state, while raw provider responses are written to timestamped
 JSON files and archived separately once per day.
 
+For the later production evolution from the first inline design to the decoupled receipt-worker design, see [docs/live-backend-evolution.md](/Users/raphaelvolz/Github/woladen.de/docs/live-backend-evolution.md).
+
 ## Services
 
 - `scripts/live_ingester.py`: seeds metadata, polls dynamic providers, stores current state in SQLite, and writes one raw response log file per fetch.

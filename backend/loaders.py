@@ -171,17 +171,19 @@ def load_provider_targets(
         subscription_override = subscription_registry.get(provider_uid) or {}
         override = override_payload.get(provider_uid) or {}
         merged_override = {**subscription_override, **override}
+        enabled = bool(merged_override.get("enabled", True))
         fetch_url = str(merged_override.get("fetch_url") or "").strip()
         fetch_kind = str(merged_override.get("fetch_kind") or "").strip()
-        if not fetch_url or not fetch_kind:
+        if enabled and (not fetch_url or not fetch_kind):
             continue
 
-        publication_id = str(merged_override.get("publication_id") or fetch_url).strip()
+        if not fetch_kind:
+            fetch_kind = "disabled"
+        publication_id = str(merged_override.get("publication_id") or fetch_url or provider_uid).strip()
         access_mode = str(merged_override.get("access_mode") or "").strip()
         subscription_id = str(merged_override.get("subscription_id") or "").strip()
         delta_delivery = bool(merged_override.get("delta_delivery"))
         retention_period_minutes = _to_optional_int(merged_override.get("retention_period_minutes"))
-        enabled = bool(merged_override.get("enabled", True))
         delivery_mode = _normalize_delivery_mode(merged_override.get("delivery_mode"))
         push_fallback_after_seconds = _to_optional_int(merged_override.get("push_fallback_after_seconds"))
         if fetch_kind == "mtls_subscription" and subscription_id:

@@ -6,6 +6,7 @@ state in SQLite, exposes a read API via FastAPI, and stores raw payload logs for
 
 For deployment-specific instructions, see [deploy/ionos/README.md](/Users/raphaelvolz/Github/woladen.de/deploy/ionos/README.md).
 For the higher-level product note, see [docs/live-api-mvp.md](/Users/raphaelvolz/Github/woladen.de/docs/live-api-mvp.md).
+For the version history and rollout evidence, see [docs/live-backend-evolution.md](/Users/raphaelvolz/Github/woladen.de/docs/live-backend-evolution.md).
 
 ## Components
 
@@ -82,6 +83,58 @@ curl -fsS https://live.woladen.de/healthz
 sudo systemctl status woladen-live-api.service woladen-live-ingester.service --no-pager
 sudo journalctl -u woladen-live-api.service -u woladen-live-ingester.service -n 100 --no-pager
 ```
+
+## Scaling Rollout Plan
+
+The current live deployment is intentionally simple:
+
+- one `live_ingester.py` loop
+- one `live_api.py` service behind Caddy
+- one local SQLite database in WAL mode
+
+That architecture scales well on a single host as long as write concurrency stays low. It is a poor fit for active-active multi-node deployment because the ingester and API share a local SQLite file and SQLite still allows only one writer per database file.
+
+Use the following staged rollout plan instead of jumping directly to many small servers.
+
+### Phase 1: Scale Up The Single Host
+
+When the first pressure comes from CPU, request volume, or a busier ingestion loop, prefer a larger VPS first.
+
+- Move to more CPU and RAM before changing the topology.
+- Keep a single ingester process and keep SQLite local to the same machine.
+- Add API workers on the same host if read traffic grows, while keeping one Caddy entry point.
+- Prefer fast local SSD or NVMe storage over network-attached database files.
+
+This is the default path while the bottleneck is one hot ingester process or moderate API traffic.
+
+### Phase 2: Measure Before Splitting
+
+Before any architecture change, collect evidence about which part is actually saturated.
+
+- API latency and error rate
+- request rate and concurrent connections
+- ingester cycle duration and provider-specific processing cost
+- SQLite lock contention or busy timeouts
+- memory growth, WAL size, and disk I/O
+
+If the API is the bottleneck, increase local API workers first. If the ingester is the bottleneck, profile provider fetch, decode, match, and write cost before introducing more moving parts.
+
+### Phase 3: Separate Storage Before Horizontal Scaling
+
+Do not add multiple app servers that depend on the same SQLite file. When the product needs real horizontal scaling or higher availability, move the live state to a client/server database first.
+
+- Migrate live state from SQLite to PostgreSQL.
+- Keep the API stateless so multiple API instances can run behind Caddy or another load balancer.
+- Continue with one ingester first, then shard ingestion by provider group only after the database supports concurrent writers safely.
+- Add at least two API instances only after the shared-state layer is no longer SQLite-bound.
+
+This is the point where many smaller servers start to make sense.
+
+### Decision Rule
+
+- If one core is busy but the host still has headroom, buy a bigger box.
+- If the API needs more throughput on the same host, add local API workers.
+- If the deployment needs multiple API nodes, HA failover, or multiple concurrent writers, migrate to PostgreSQL first and only then scale out horizontally.
 
 ## Runtime Configuration
 

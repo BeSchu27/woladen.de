@@ -23,23 +23,51 @@ ACTIVE_DYN_DATEX_SUBSCRIPTION_PROVIDER_UIDS = (
 # eliso uses the same authenticated Mobilithek subscription flow, but publishes a
 # generic JSON model instead of DATEX V3.
 ACTIVE_DYNAMIC_SUBSCRIPTION_PROVIDER_UIDS = ACTIVE_DYN_DATEX_SUBSCRIPTION_PROVIDER_UIDS + ("eliso",)
+LIVE_PUSH_FALLBACK_PROVIDER_UIDS = frozenset(
+    {
+        "chargecloud",
+        "eco_movement",
+        "edri",
+        "eliso",
+        "elu_mobility",
+        "enbwmobility",
+        "eround",
+        "ladenetz_de_ladestationsdaten",
+        "m8mit",
+        "monta",
+        "qwello",
+        "smatrics",
+        "tesla",
+        "vaylens",
+        "wirelane",
+    }
+)
 LIVE_REGISTRY_PROVIDER_OVERRIDES: dict[str, dict[str, Any]] = {
-    "tesla": {
+    provider_uid: {
         "delivery_mode": "push_with_poll_fallback",
         "push_fallback_after_seconds": 300,
-    },
-    "edri": {
-        "delivery_mode": "push_with_poll_fallback",
-        "push_fallback_after_seconds": 300,
-    },
-    "qwello": {
-        "delivery_mode": "push_with_poll_fallback",
-        "push_fallback_after_seconds": 300,
-    },
-    "ladenetz_de_ladestationsdaten": {
-        "delivery_mode": "push_with_poll_fallback",
-        "push_fallback_after_seconds": 300,
-    },
+    }
+    for provider_uid in LIVE_PUSH_FALLBACK_PROVIDER_UIDS
+}
+LIVE_REGISTRY_PROVIDER_OVERRIDES["monta"].update(
+    {
+        "enabled": True,
+        "fetch_kind": "mtls_subscription",
+    }
+)
+LIVE_REGISTRY_PROVIDER_OVERRIDES["mobidata_bw_datex"] = {"enabled": False}
+LIVE_REGISTRY_DISABLED_PROVIDER_ENTRIES: dict[str, dict[str, Any]] = {
+    "deprecated_chargecloud": {
+        "provider_uid": "deprecated_chargecloud",
+        "display_name": "deprecated chargecloud",
+        "publisher": "chargecloud GmbH",
+        "enabled": False,
+        "fetch_kind": "disabled",
+        "fetch_url": "",
+        "publication_id": "deprecated_chargecloud",
+        "access_mode": "",
+        "note": "Explicitly disabled after migration away from the deprecated chargecloud target.",
+    }
 }
 
 
@@ -367,6 +395,9 @@ def build_live_subscription_registry(
             "static_access_mode": "noauth",
             "note": "Public DATEX II endpoints outside Mobilithek (since April 2026).",
         }
+
+    for provider_uid, entry in LIVE_REGISTRY_DISABLED_PROVIDER_ENTRIES.items():
+        merged_registry[provider_uid] = dict(entry)
 
     for provider_uid, overrides in LIVE_REGISTRY_PROVIDER_OVERRIDES.items():
         if provider_uid not in merged_registry:

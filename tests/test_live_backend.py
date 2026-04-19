@@ -585,6 +585,36 @@ def test_load_provider_targets_adds_synthetic_direct_url_provider(app_config):
     assert provider.enabled is True
 
 
+def test_load_provider_targets_adds_synthetic_disabled_provider(app_config):
+    app_config.provider_config_path.write_text(json.dumps({"providers": []}), encoding="utf-8")
+    app_config.subscription_registry_path.write_text(
+        json.dumps(
+            {
+                "deprecated_chargecloud": {
+                    "display_name": "deprecated chargecloud",
+                    "publisher": "chargecloud GmbH",
+                    "enabled": False,
+                    "fetch_kind": "disabled",
+                    "publication_id": "deprecated_chargecloud",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    providers = load_provider_targets(
+        app_config.provider_config_path,
+        subscription_registry_path=app_config.subscription_registry_path,
+    )
+
+    assert len(providers) == 1
+    provider = providers[0]
+    assert provider.provider_uid == "deprecated_chargecloud"
+    assert provider.fetch_kind == "disabled"
+    assert provider.fetch_url == ""
+    assert provider.enabled is False
+
+
 def test_real_monta_subscription_registry_entry_enables_mtls_target():
     repo_root = Path(__file__).resolve().parent.parent
     providers = load_provider_targets(

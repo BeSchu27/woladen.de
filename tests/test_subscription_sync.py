@@ -206,16 +206,22 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
     assert registry["eco_movement"]["subscription_id"] == "980986321979551744"
     assert registry["eco_movement"]["fetch_kind"] == "mtls_subscription"
     assert registry["eco_movement"]["enabled"] is True
+    assert registry["eco_movement"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["eco_movement"]["push_fallback_after_seconds"] == 300
 
     assert registry["eliso"]["subscription_id"] == "980986474933399552"
     assert registry["eliso"]["static_subscription_id"] == "980986489051262976"
     assert registry["eliso"]["fetch_kind"] == "mtls_subscription"
     assert registry["eliso"]["enabled"] is True
+    assert registry["eliso"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["eliso"]["push_fallback_after_seconds"] == 300
 
     assert registry["m8mit"]["subscription_id"] == "980986232691372032"
     assert registry["m8mit"]["static_subscription_id"] == "980986244745637888"
     assert registry["m8mit"]["fetch_kind"] == "mtls_subscription"
     assert registry["m8mit"]["enabled"] is True
+    assert registry["m8mit"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["m8mit"]["push_fallback_after_seconds"] == 300
 
     assert registry["tesla"]["subscription_id"] == "980986356418981888"
     assert registry["tesla"]["static_subscription_id"] == "980986370583146496"
@@ -228,10 +234,13 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
     assert registry["pump"]["static_subscription_id"] == "980986256821039104"
     assert registry["mobidata_bw_datex"]["fetch_kind"] == "direct_url"
     assert registry["mobidata_bw_datex"]["fetch_url"] == "https://api.mobidata-bw.de/ocpdb/api/public/datex/v3.5/json/realtime"
+    assert registry["mobidata_bw_datex"]["enabled"] is False
     assert (
         registry["mobidata_bw_datex"]["static_fetch_url"]
         == "https://api.mobidata-bw.de/ocpdb/api/public/datex/v3.5/json/static"
     )
+    assert registry["deprecated_chargecloud"]["enabled"] is False
+    assert registry["deprecated_chargecloud"]["fetch_kind"] == "disabled"
 
 
 def test_build_live_subscription_registry_applies_push_overrides_for_qwello_and_ladenetz():
@@ -268,6 +277,81 @@ def test_build_live_subscription_registry_applies_push_overrides_for_qwello_and_
     assert registry["qwello"]["push_fallback_after_seconds"] == 300
     assert registry["ladenetz_de_ladestationsdaten"]["delivery_mode"] == "push_with_poll_fallback"
     assert registry["ladenetz_de_ladestationsdaten"]["push_fallback_after_seconds"] == 300
+
+
+def test_build_live_subscription_registry_applies_push_overrides_for_remaining_push_providers():
+    offers = [
+        SubscriptionOffer(
+            provider_uid="chargecloud",
+            display_name="chargecloud",
+            publisher="chargecloud GmbH",
+            publication_id="980862594474274816",
+            offer_title="AFIR-recharging-dyn-chargecloud-json",
+            feed_kind="dynamic",
+            access_mode="noauth",
+        ),
+        SubscriptionOffer(
+            provider_uid="enbwmobility",
+            display_name="enbwmobility",
+            publisher="EnBW AG",
+            publication_id="907575401287241728",
+            offer_title="AFIR-recharging-dyn-EnBWmobility+",
+            feed_kind="dynamic",
+            access_mode="auth",
+        ),
+        SubscriptionOffer(
+            provider_uid="monta",
+            display_name="monta",
+            publisher="Monta ApS",
+            publication_id="963870983660167168",
+            offer_title="AFIR-recharging-dyn-MONTA",
+            feed_kind="dynamic",
+            access_mode="auth",
+        ),
+        SubscriptionOffer(
+            provider_uid="smatrics",
+            display_name="smatrics",
+            publisher="SMATRICS GmbH & Co KG",
+            publication_id="961319990963605504",
+            offer_title="AFIR-recharging-dyn-SMATRICS",
+            feed_kind="dynamic",
+            access_mode="noauth",
+        ),
+        SubscriptionOffer(
+            provider_uid="vaylens",
+            display_name="vaylens",
+            publisher="vaylens GmbH",
+            publication_id="979364650281549824",
+            offer_title="AFIR-recharging-dyn-vaylens GmbH",
+            feed_kind="dynamic",
+            access_mode="auth",
+        ),
+        SubscriptionOffer(
+            provider_uid="wirelane",
+            display_name="wirelane",
+            publisher="Wirelane GmbH",
+            publication_id="876587237907525632",
+            offer_title="AFIR-recharging-dyn-Wirelane",
+            feed_kind="dynamic",
+            access_mode="auth",
+        ),
+    ]
+
+    registry = build_live_subscription_registry(
+        offers,
+        [
+            {"id": "980986017846382592", "dataOfferId": "980862594474274816", "contractStatus": "ACTIVE"},
+            {"id": "980985483907280896", "dataOfferId": "907575401287241728", "contractStatus": "ACTIVE"},
+            {"id": "982024950290042880", "dataOfferId": "963870983660167168", "contractStatus": "ACTIVE"},
+            {"id": "980986307605835776", "dataOfferId": "961319990963605504", "contractStatus": "ACTIVE"},
+            {"id": "980986055062597632", "dataOfferId": "979364650281549824", "contractStatus": "ACTIVE"},
+            {"id": "980986434407878656", "dataOfferId": "876587237907525632", "contractStatus": "ACTIVE"},
+        ],
+    )
+
+    for provider_uid in ("chargecloud", "enbwmobility", "monta", "smatrics", "vaylens", "wirelane"):
+        assert registry[provider_uid]["delivery_mode"] == "push_with_poll_fallback"
+        assert registry[provider_uid]["push_fallback_after_seconds"] == 300
 
 
 def test_resolve_credentials_reads_secret_files(tmp_path: Path, monkeypatch):
