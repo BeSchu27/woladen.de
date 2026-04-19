@@ -44,7 +44,7 @@ def main() -> None:
     if args.loop:
         bootstrap_loop_if_missing(service)
         while True:
-            result = service.ingest_next_provider(bootstrap=False)
+            result = service.receive_next_provider(bootstrap=False)
             if result is not None:
                 print(json.dumps(result))
                 if args.sleep_seconds > 0:

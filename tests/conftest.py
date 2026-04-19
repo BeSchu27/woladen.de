@@ -18,6 +18,7 @@ def app_config(tmp_path: Path) -> AppConfig:
         chargers_geojson_path=tmp_path / "chargers_fast.geojson",
         raw_payload_dir=tmp_path / "raw",
         archive_dir=tmp_path / "archives",
+        queue_dir=tmp_path / "queue",
         provider_config_path=tmp_path / "providers.json",
         site_match_path=tmp_path / "matches.csv",
         chargers_csv_path=tmp_path / "chargers.csv",

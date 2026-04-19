@@ -17,6 +17,8 @@ class ProviderTarget:
     enabled: bool
     delta_delivery: bool
     retention_period_minutes: int | None
+    delivery_mode: str = "poll_only"
+    push_fallback_after_seconds: int | None = None
 
 
 @dataclass(frozen=True)

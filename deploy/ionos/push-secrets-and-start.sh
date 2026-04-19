@@ -201,8 +201,8 @@ fi
 systemctl daemon-reload
 
 if [[ "$start_services" == "1" ]]; then
-  systemctl restart woladen-live-api.service woladen-live-ingester.service
-  systemctl --no-pager --lines=5 status woladen-live-api.service woladen-live-ingester.service
+  systemctl restart woladen-live-api.service woladen-live-ingester.service woladen-live-queue-worker.service
+  systemctl --no-pager --lines=5 status woladen-live-api.service woladen-live-ingester.service woladen-live-queue-worker.service
   curl -fsS http://127.0.0.1:8001/healthz
 fi
 EOF

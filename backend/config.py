@@ -71,6 +71,9 @@ class AppConfig:
     archive_dir: Path = field(
         default_factory=lambda: _env_path("WOLADEN_LIVE_ARCHIVE_DIR", REPO_ROOT / "data" / "live_archives")
     )
+    queue_dir: Path = field(
+        default_factory=lambda: _env_path("WOLADEN_LIVE_QUEUE_DIR", REPO_ROOT / "data" / "live_queue")
+    )
     provider_config_path: Path = field(
         default_factory=lambda: _env_path(
             "WOLADEN_LIVE_PROVIDER_CONFIG_PATH",
@@ -151,6 +154,9 @@ class AppConfig:
     )
     sqlite_busy_timeout_ms: int = field(
         default_factory=lambda: int(os.environ.get("WOLADEN_LIVE_SQLITE_BUSY_TIMEOUT_MS", "5000"))
+    )
+    queue_idle_sleep_seconds: float = field(
+        default_factory=lambda: float(os.environ.get("WOLADEN_LIVE_QUEUE_IDLE_SLEEP_SECONDS", "1"))
     )
     archive_timezone_name: str = field(
         default_factory=lambda: str(os.environ.get("WOLADEN_LIVE_ARCHIVE_TIMEZONE", "Europe/Berlin")).strip()

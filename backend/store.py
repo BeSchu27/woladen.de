@@ -19,6 +19,9 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+IMMEDIATE_DUE_AT = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
 def _iso_or_empty(value: str | None) -> str:
     return str(value or "").strip()
 
@@ -88,6 +91,8 @@ class LiveStore:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     delta_delivery INTEGER NOT NULL DEFAULT 0,
                     retention_period_minutes INTEGER,
+                    delivery_mode TEXT NOT NULL DEFAULT 'poll_only',
+                    push_fallback_after_seconds INTEGER,
                     last_polled_at TEXT NOT NULL DEFAULT '',
                     next_poll_at TEXT NOT NULL DEFAULT '',
                     last_result TEXT NOT NULL DEFAULT '',
@@ -248,6 +253,8 @@ class LiveStore:
             ("last_push_received_at", "TEXT NOT NULL DEFAULT ''"),
             ("last_push_result", "TEXT NOT NULL DEFAULT ''"),
             ("last_push_error_text", "TEXT NOT NULL DEFAULT ''"),
+            ("delivery_mode", "TEXT NOT NULL DEFAULT 'poll_only'"),
+            ("push_fallback_after_seconds", "INTEGER"),
         ]
         for column_name, definition in additions:
             if column_name in existing:
@@ -477,8 +484,9 @@ class LiveStore:
                     INSERT INTO providers (
                         provider_uid, display_name, publisher, publication_id, access_mode,
                         fetch_kind, fetch_url, subscription_id, enabled, delta_delivery,
-                        retention_period_minutes, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        retention_period_minutes, delivery_mode, push_fallback_after_seconds,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(provider_uid) DO UPDATE SET
                         display_name=excluded.display_name,
                         publisher=excluded.publisher,
@@ -490,6 +498,8 @@ class LiveStore:
                         enabled=excluded.enabled,
                         delta_delivery=excluded.delta_delivery,
                         retention_period_minutes=excluded.retention_period_minutes,
+                        delivery_mode=excluded.delivery_mode,
+                        push_fallback_after_seconds=excluded.push_fallback_after_seconds,
                         updated_at=excluded.updated_at
                     """,
                     (
@@ -504,6 +514,8 @@ class LiveStore:
                         1 if provider.enabled else 0,
                         1 if provider.delta_delivery else 0,
                         provider.retention_period_minutes,
+                        provider.delivery_mode,
+                        provider.push_fallback_after_seconds,
                         now,
                         now,
                     ),
@@ -592,8 +604,7 @@ class LiveStore:
                 """
             )
 
-            for station_id in affected_station_ids:
-                self._refresh_station_current_state(conn, station_id)
+            self._refresh_station_current_states(conn, affected_station_ids)
 
         return len(rows)
 
@@ -640,6 +651,37 @@ class LiveStore:
         sql += " ORDER BY COALESCE(next_poll_at, ''), COALESCE(last_polled_at, ''), provider_uid"
         with self.connection() as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    def _push_fallback_after_seconds(self, provider: dict[str, Any]) -> int:
+        configured = provider.get("push_fallback_after_seconds")
+        try:
+            configured_seconds = int(configured)
+        except (TypeError, ValueError):
+            configured_seconds = 0
+        if configured_seconds > 0:
+            return configured_seconds
+        return max(self._base_poll_interval_seconds(provider) * 4, 60)
+
+    def _provider_due_at(self, provider: dict[str, Any]) -> datetime | None:
+        if not bool(provider.get("enabled")):
+            return None
+
+        delivery_mode = str(provider.get("delivery_mode") or "poll_only").strip().lower() or "poll_only"
+        if delivery_mode == "push_only":
+            return None
+
+        next_poll_at = _parse_iso_utc(provider.get("next_poll_at"))
+        if delivery_mode != "push_with_poll_fallback":
+            return next_poll_at or IMMEDIATE_DUE_AT
+
+        last_push_received_at = _parse_iso_utc(provider.get("last_push_received_at"))
+        if last_push_received_at is None:
+            return next_poll_at or IMMEDIATE_DUE_AT
+
+        push_due_at = last_push_received_at + timedelta(seconds=self._push_fallback_after_seconds(provider))
+        if next_poll_at is None:
+            return push_due_at
+        return max(next_poll_at, push_due_at)
 
     def get_provider(self, provider_uid: str) -> dict[str, Any] | None:
         with self.connection() as conn:
@@ -793,48 +835,35 @@ class LiveStore:
         return updates_by_provider
 
     def get_next_provider_for_round_robin(self) -> dict[str, Any] | None:
-        now = utc_now_iso()
-        with self.connection() as conn:
-            row = conn.execute(
-                """
-                SELECT *
-                FROM providers
-                WHERE enabled = 1
-                  AND (next_poll_at = '' OR next_poll_at <= ?)
-                ORDER BY
-                    CASE WHEN last_polled_at = '' THEN 0 ELSE 1 END,
-                    CASE WHEN next_poll_at = '' THEN 0 ELSE 1 END,
-                    next_poll_at,
+        now = datetime.now(timezone.utc)
+        due_candidates: list[tuple[int, datetime, str, str, dict[str, Any]]] = []
+        for provider in self.list_providers(enabled_only=True):
+            due_at = self._provider_due_at(provider)
+            if due_at is None or due_at > now:
+                continue
+            last_polled_at = _iso_or_empty(provider.get("last_polled_at"))
+            due_candidates.append(
+                (
+                    0 if not last_polled_at else 1,
+                    due_at,
                     last_polled_at,
-                    provider_uid
-                LIMIT 1
-                """
-                ,
-                (now,),
-            ).fetchone()
-        return dict(row) if row else None
+                    str(provider["provider_uid"]),
+                    provider,
+                )
+            )
+        if not due_candidates:
+            return None
+        due_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        return due_candidates[0][4]
 
     def seconds_until_next_provider_due(self) -> float | None:
-        with self.connection() as conn:
-            row = conn.execute(
-                """
-                SELECT next_poll_at
-                FROM providers
-                WHERE enabled = 1
-                ORDER BY
-                    CASE WHEN next_poll_at = '' THEN 0 ELSE 1 END,
-                    next_poll_at,
-                    provider_uid
-                LIMIT 1
-                """
-            ).fetchone()
-        if row is None:
+        now = datetime.now(timezone.utc)
+        due_at_values = [self._provider_due_at(provider) for provider in self.list_providers(enabled_only=True)]
+        due_at_values = [value for value in due_at_values if value is not None]
+        if not due_at_values:
             return None
-        next_poll_at = _iso_or_empty(row["next_poll_at"])
-        if not next_poll_at:
-            return 0.0
-        delay = _seconds_until_iso(next_poll_at)
-        return max(0.0, delay or 0.0)
+        delay = min((value - now).total_seconds() for value in due_at_values)
+        return max(0.0, delay)
 
     def get_site_station_map(self, provider_uid: str) -> dict[str, str]:
         with self.connection() as conn:
@@ -981,6 +1010,114 @@ class LiveStore:
                 ),
             )
 
+    def queue_poll_run(
+        self,
+        poll_run_id: int,
+        *,
+        provider_uid: str,
+        fetched_at: str,
+        http_status: int = 0,
+        payload_sha256: str = "",
+    ) -> None:
+        ended_text = utc_now_iso()
+        provider = self.get_provider(provider_uid) or {}
+        base_next_poll_at = _shift_iso(fetched_at or ended_text, self._base_poll_interval_seconds(provider))
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE provider_poll_runs
+                SET ended_at = ?, fetched_at = ?, result = ?, http_status = ?, payload_sha256 = ?
+                WHERE id = ?
+                """,
+                (ended_text, fetched_at, "queued", http_status, payload_sha256, poll_run_id),
+            )
+            conn.execute(
+                """
+                UPDATE providers
+                SET last_polled_at = ?, next_poll_at = ?, last_result = ?, last_error_text = ?, updated_at = ?
+                WHERE provider_uid = ?
+                """,
+                (fetched_at or ended_text, base_next_poll_at, "queued", "", ended_text, provider_uid),
+            )
+
+    def complete_poll_run(
+        self,
+        poll_run_id: int,
+        *,
+        provider_uid: str,
+        result: str,
+        fetched_at: str,
+        http_status: int = 0,
+        error_text: str = "",
+        payload_sha256: str = "",
+        observation_count: int = 0,
+        mapped_observation_count: int = 0,
+        dropped_observation_count: int = 0,
+        changed_observation_count: int = 0,
+        changed_mapped_observation_count: int = 0,
+        changed_dropped_observation_count: int = 0,
+    ) -> None:
+        ended_text = utc_now_iso()
+        with self.connection() as conn:
+            provider_row = conn.execute("SELECT * FROM providers WHERE provider_uid = ?", (provider_uid,)).fetchone()
+            provider = dict(provider_row) if provider_row else {}
+            desired_next_poll_at, no_data_count, error_count, unchanged_count = self._next_poll_state(
+                provider,
+                result=result,
+                changed_observation_count=changed_observation_count,
+                reference_time=fetched_at or ended_text,
+            )
+            current_next_poll_at = _parse_iso_utc(provider.get("next_poll_at"))
+            desired_next_poll_dt = _parse_iso_utc(desired_next_poll_at)
+            if current_next_poll_at is not None and desired_next_poll_dt is not None:
+                effective_next_poll_at = max(current_next_poll_at, desired_next_poll_dt).replace(microsecond=0).isoformat()
+            else:
+                effective_next_poll_at = desired_next_poll_at
+            conn.execute(
+                """
+                UPDATE provider_poll_runs
+                SET ended_at = ?, fetched_at = ?, result = ?, http_status = ?, error_text = ?,
+                    payload_sha256 = ?, observation_count = ?, mapped_observation_count = ?,
+                    dropped_observation_count = ?, changed_observation_count = ?,
+                    changed_mapped_observation_count = ?, changed_dropped_observation_count = ?
+                WHERE id = ?
+                """,
+                (
+                    ended_text,
+                    fetched_at,
+                    result,
+                    http_status,
+                    error_text,
+                    payload_sha256,
+                    observation_count,
+                    mapped_observation_count,
+                    dropped_observation_count,
+                    changed_observation_count,
+                    changed_mapped_observation_count,
+                    changed_dropped_observation_count,
+                    poll_run_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE providers
+                SET next_poll_at = ?, last_result = ?, last_error_text = ?,
+                    consecutive_no_data_count = ?, consecutive_error_count = ?, consecutive_unchanged_count = ?,
+                    updated_at = ?
+                WHERE provider_uid = ?
+                """,
+                (
+                    effective_next_poll_at,
+                    result,
+                    error_text,
+                    no_data_count,
+                    error_count,
+                    unchanged_count,
+                    ended_text,
+                    provider_uid,
+                ),
+            )
+
     def finish_push_run(
         self,
         push_run_id: int,
@@ -1037,6 +1174,33 @@ class LiveStore:
                     ended_text,
                     provider_uid,
                 ),
+            )
+
+    def queue_push_run(
+        self,
+        push_run_id: int,
+        *,
+        provider_uid: str,
+        received_at: str,
+        payload_sha256: str = "",
+    ) -> None:
+        ended_text = utc_now_iso()
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE provider_push_runs
+                SET ended_at = ?, received_at = ?, result = ?, payload_sha256 = ?
+                WHERE id = ?
+                """,
+                (ended_text, received_at, "queued", payload_sha256, push_run_id),
+            )
+            conn.execute(
+                """
+                UPDATE providers
+                SET last_push_received_at = ?, last_push_result = ?, last_push_error_text = ?, updated_at = ?
+                WHERE provider_uid = ?
+                """,
+                (received_at or ended_text, "queued", "", ended_text, provider_uid),
             )
 
     def _base_poll_interval_seconds(self, provider: dict[str, Any]) -> int:
@@ -1244,16 +1408,23 @@ class LiveStore:
 
         with self.connection() as conn:
             payload_sha256 = hashlib.sha256(payload_bytes).hexdigest()
-
-            for fact in facts:
-                current_row = conn.execute(
-                    """
+            current_by_evse_id: dict[str, sqlite3.Row] = {}
+            fact_evse_ids = sorted({str(fact.evse_id) for fact in facts if str(fact.evse_id).strip()})
+            if fact_evse_ids:
+                placeholders = ", ".join(["?"] * len(fact_evse_ids))
+                current_rows = conn.execute(
+                    f"""
                     SELECT *
                     FROM evse_current_state
-                    WHERE provider_uid = ? AND provider_evse_id = ?
+                    WHERE provider_uid = ? AND provider_evse_id IN ({placeholders})
                     """,
-                    (provider_uid, fact.evse_id),
-                ).fetchone()
+                    (provider_uid, *fact_evse_ids),
+                ).fetchall()
+                current_by_evse_id = {str(row["provider_evse_id"]): row for row in current_rows}
+
+            upsert_rows: list[tuple[Any, ...]] = []
+            for fact in facts:
+                current_row = current_by_evse_id.get(str(fact.evse_id))
                 changed_since_previous = 1 if self._state_signature(current_row) != self._fact_signature(fact) else 0
                 previous_station_id = str(current_row["station_id"] or "").strip() if current_row else ""
                 changed_count += changed_since_previous
@@ -1269,7 +1440,25 @@ class LiveStore:
                         changed_dropped_count += 1
                 if previous_station_id and previous_station_id != station_id:
                     affected_station_ids.add(previous_station_id)
-                conn.execute(
+                upsert_rows.append(
+                    (
+                        provider_uid,
+                        fact.site_id,
+                        fact.station_ref,
+                        fact.evse_id,
+                        station_id,
+                        fact.availability_status,
+                        fact.operational_status,
+                        *self._price_values(fact.price),
+                        *self._dynamic_extra_values(fact),
+                        _iso_or_empty(fact.source_observed_at),
+                        fetched_at,
+                        ingested_at,
+                        payload_sha256,
+                    )
+                )
+            if upsert_rows:
+                conn.executemany(
                     """
                     INSERT INTO evse_current_state (
                         provider_uid, provider_site_id, provider_station_ref, provider_evse_id,
@@ -1300,25 +1489,10 @@ class LiveStore:
                         ingested_at=excluded.ingested_at,
                         payload_sha256=excluded.payload_sha256
                     """,
-                    (
-                        provider_uid,
-                        fact.site_id,
-                        fact.station_ref,
-                        fact.evse_id,
-                        station_id,
-                        fact.availability_status,
-                        fact.operational_status,
-                        *self._price_values(fact.price),
-                        *self._dynamic_extra_values(fact),
-                        _iso_or_empty(fact.source_observed_at),
-                        fetched_at,
-                        ingested_at,
-                        payload_sha256,
-                    ),
+                    upsert_rows,
                 )
 
-            for station_id in affected_station_ids:
-                self._refresh_station_current_state(conn, station_id)
+            self._refresh_station_current_states(conn, affected_station_ids)
 
         return {
             "payload_sha256": payload_sha256,
@@ -1330,110 +1504,136 @@ class LiveStore:
             "changed_dropped_observation_count": changed_dropped_count,
         }
 
-    def _refresh_station_current_state(self, conn: sqlite3.Connection, station_id: str) -> None:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM evse_current_state
-            WHERE station_id = ?
-            ORDER BY provider_uid, provider_evse_id
-            """,
-            (station_id,),
-        ).fetchall()
-        if not rows:
-            conn.execute("DELETE FROM station_current_state WHERE station_id = ?", (station_id,))
+    def _refresh_station_current_states(self, conn: sqlite3.Connection, station_ids: Iterable[str]) -> None:
+        normalized_station_ids = []
+        seen_station_ids: set[str] = set()
+        for station_id in station_ids:
+            normalized = str(station_id or "").strip()
+            if not normalized or normalized in seen_station_ids:
+                continue
+            seen_station_ids.add(normalized)
+            normalized_station_ids.append(normalized)
+        if not normalized_station_ids:
             return
 
-        counts = {"free": 0, "occupied": 0, "out_of_order": 0, "unknown": 0}
-        provider_uid = str(rows[0]["provider_uid"])
-        fetched_at = max(str(row["fetched_at"]) for row in rows if str(row["fetched_at"]))
-        ingested_at = max(str(row["ingested_at"]) for row in rows if str(row["ingested_at"]))
-        observed_candidates = [str(row["source_observed_at"]) for row in rows if str(row["source_observed_at"])]
-        source_observed_at = max(observed_candidates) if observed_candidates else ""
+        placeholders = ", ".join(["?"] * len(normalized_station_ids))
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM evse_current_state
+            WHERE station_id IN ({placeholders})
+            ORDER BY station_id, provider_uid, provider_evse_id
+            """,
+            tuple(normalized_station_ids),
+        ).fetchall()
 
-        price_display = ""
-        price_currency = ""
-        energy_min = ""
-        energy_max = ""
-        time_min: float | None = None
-        time_max: float | None = None
-        price_complex = 0
-        fallback_price_snapshot: tuple[str, str, str, str, float | None, float | None, int] | None = None
-        chosen_price_snapshot: tuple[str, str, str, str, float | None, float | None, int] | None = None
-
+        rows_by_station_id: dict[str, list[sqlite3.Row]] = {station_id: [] for station_id in normalized_station_ids}
         for row in rows:
-            status = str(row["availability_status"])
-            counts[status if status in counts else "unknown"] += 1
-            price_snapshot = self._price_snapshot_from_row(row)
-            if price_snapshot is None:
-                continue
-            if fallback_price_snapshot is None:
-                fallback_price_snapshot = price_snapshot
-            if price_snapshot[0] and chosen_price_snapshot is None:
-                chosen_price_snapshot = price_snapshot
+            rows_by_station_id.setdefault(str(row["station_id"]), []).append(row)
 
-        selected_price_snapshot = chosen_price_snapshot or fallback_price_snapshot
-        if selected_price_snapshot is not None:
-            price_display, price_currency, energy_min, energy_max, time_min, time_max, price_complex = (
-                selected_price_snapshot
+        upsert_rows: list[tuple[Any, ...]] = []
+        empty_station_ids = [station_id for station_id, station_rows in rows_by_station_id.items() if not station_rows]
+        for station_id in empty_station_ids:
+            conn.execute("DELETE FROM station_current_state WHERE station_id = ?", (station_id,))
+
+        for station_id, station_rows in rows_by_station_id.items():
+            if not station_rows:
+                continue
+            counts = {"free": 0, "occupied": 0, "out_of_order": 0, "unknown": 0}
+            provider_uid = str(station_rows[0]["provider_uid"])
+            fetched_at = max(str(row["fetched_at"]) for row in station_rows if str(row["fetched_at"]))
+            ingested_at = max(str(row["ingested_at"]) for row in station_rows if str(row["ingested_at"]))
+            observed_candidates = [str(row["source_observed_at"]) for row in station_rows if str(row["source_observed_at"])]
+            source_observed_at = max(observed_candidates) if observed_candidates else ""
+
+            price_display = ""
+            price_currency = ""
+            energy_min = ""
+            energy_max = ""
+            time_min: float | None = None
+            time_max: float | None = None
+            price_complex = 0
+            fallback_price_snapshot: tuple[str, str, str, str, float | None, float | None, int] | None = None
+            chosen_price_snapshot: tuple[str, str, str, str, float | None, float | None, int] | None = None
+
+            for row in station_rows:
+                status = str(row["availability_status"])
+                counts[status if status in counts else "unknown"] += 1
+                price_snapshot = self._price_snapshot_from_row(row)
+                if price_snapshot is None:
+                    continue
+                if fallback_price_snapshot is None:
+                    fallback_price_snapshot = price_snapshot
+                if price_snapshot[0] and chosen_price_snapshot is None:
+                    chosen_price_snapshot = price_snapshot
+
+            selected_price_snapshot = chosen_price_snapshot or fallback_price_snapshot
+            if selected_price_snapshot is not None:
+                price_display, price_currency, energy_min, energy_max, time_min, time_max, price_complex = (
+                    selected_price_snapshot
+                )
+
+            availability_status = "unknown"
+            if counts["free"] > 0:
+                availability_status = "free"
+            elif counts["occupied"] > 0:
+                availability_status = "occupied"
+            elif counts["out_of_order"] > 0:
+                availability_status = "out_of_order"
+
+            upsert_rows.append(
+                (
+                    station_id,
+                    provider_uid,
+                    availability_status,
+                    counts["free"],
+                    counts["occupied"],
+                    counts["out_of_order"],
+                    counts["unknown"],
+                    len(station_rows),
+                    price_display,
+                    price_currency,
+                    energy_min,
+                    energy_max,
+                    time_min,
+                    time_max,
+                    price_complex,
+                    source_observed_at,
+                    fetched_at,
+                    ingested_at,
+                )
             )
 
-        availability_status = "unknown"
-        if counts["free"] > 0:
-            availability_status = "free"
-        elif counts["occupied"] > 0:
-            availability_status = "occupied"
-        elif counts["out_of_order"] > 0:
-            availability_status = "out_of_order"
-
-        conn.execute(
-            """
-            INSERT INTO station_current_state (
-                station_id, provider_uid, availability_status, available_evses, occupied_evses,
-                out_of_order_evses, unknown_evses, total_evses, price_display, price_currency,
-                price_energy_eur_kwh_min, price_energy_eur_kwh_max, price_time_eur_min_min,
-                price_time_eur_min_max, price_complex, source_observed_at, fetched_at, ingested_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(station_id) DO UPDATE SET
-                provider_uid=excluded.provider_uid,
-                availability_status=excluded.availability_status,
-                available_evses=excluded.available_evses,
-                occupied_evses=excluded.occupied_evses,
-                out_of_order_evses=excluded.out_of_order_evses,
-                unknown_evses=excluded.unknown_evses,
-                total_evses=excluded.total_evses,
-                price_display=excluded.price_display,
-                price_currency=excluded.price_currency,
-                price_energy_eur_kwh_min=excluded.price_energy_eur_kwh_min,
-                price_energy_eur_kwh_max=excluded.price_energy_eur_kwh_max,
-                price_time_eur_min_min=excluded.price_time_eur_min_min,
-                price_time_eur_min_max=excluded.price_time_eur_min_max,
-                price_complex=excluded.price_complex,
-                source_observed_at=excluded.source_observed_at,
-                fetched_at=excluded.fetched_at,
-                ingested_at=excluded.ingested_at
-            """,
-            (
-                station_id,
-                provider_uid,
-                availability_status,
-                counts["free"],
-                counts["occupied"],
-                counts["out_of_order"],
-                counts["unknown"],
-                len(rows),
-                price_display,
-                price_currency,
-                energy_min,
-                energy_max,
-                time_min,
-                time_max,
-                price_complex,
-                source_observed_at,
-                fetched_at,
-                ingested_at,
-            ),
-        )
+        if upsert_rows:
+            conn.executemany(
+                """
+                INSERT INTO station_current_state (
+                    station_id, provider_uid, availability_status, available_evses, occupied_evses,
+                    out_of_order_evses, unknown_evses, total_evses, price_display, price_currency,
+                    price_energy_eur_kwh_min, price_energy_eur_kwh_max, price_time_eur_min_min,
+                    price_time_eur_min_max, price_complex, source_observed_at, fetched_at, ingested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(station_id) DO UPDATE SET
+                    provider_uid=excluded.provider_uid,
+                    availability_status=excluded.availability_status,
+                    available_evses=excluded.available_evses,
+                    occupied_evses=excluded.occupied_evses,
+                    out_of_order_evses=excluded.out_of_order_evses,
+                    unknown_evses=excluded.unknown_evses,
+                    total_evses=excluded.total_evses,
+                    price_display=excluded.price_display,
+                    price_currency=excluded.price_currency,
+                    price_energy_eur_kwh_min=excluded.price_energy_eur_kwh_min,
+                    price_energy_eur_kwh_max=excluded.price_energy_eur_kwh_max,
+                    price_time_eur_min_min=excluded.price_time_eur_min_min,
+                    price_time_eur_min_max=excluded.price_time_eur_min_max,
+                    price_complex=excluded.price_complex,
+                    source_observed_at=excluded.source_observed_at,
+                    fetched_at=excluded.fetched_at,
+                    ingested_at=excluded.ingested_at
+                """,
+                upsert_rows,
+            )
 
     def list_station_summaries(
         self,
@@ -1445,15 +1645,7 @@ class LiveStore:
     ) -> list[dict[str, Any]]:
         sql = """
             SELECT
-                s.station_id,
-                s.operator,
-                s.address,
-                s.postcode,
-                s.city,
-                s.lat,
-                s.lon,
-                s.charging_points_count,
-                s.max_power_kw,
+                c.station_id,
                 c.provider_uid,
                 c.availability_status,
                 c.available_evses,
@@ -1472,7 +1664,6 @@ class LiveStore:
                 c.fetched_at,
                 c.ingested_at
             FROM station_current_state c
-            JOIN stations s ON s.station_id = c.station_id
             WHERE 1 = 1
         """
         params: list[Any] = []
@@ -1482,7 +1673,7 @@ class LiveStore:
         if status:
             sql += " AND c.availability_status = ?"
             params.append(status)
-        sql += " ORDER BY c.fetched_at DESC, s.station_id LIMIT ? OFFSET ?"
+        sql += " ORDER BY c.fetched_at DESC, c.station_id LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         with self.connection() as conn:
             return [self._deserialize_live_row(row) for row in conn.execute(sql, tuple(params)).fetchall()]
@@ -1503,15 +1694,7 @@ class LiveStore:
         placeholders = ", ".join(["?"] * len(ordered_station_ids))
         sql = f"""
             SELECT
-                s.station_id,
-                s.operator,
-                s.address,
-                s.postcode,
-                s.city,
-                s.lat,
-                s.lon,
-                s.charging_points_count,
-                s.max_power_kw,
+                c.station_id,
                 c.provider_uid,
                 c.availability_status,
                 c.available_evses,
@@ -1530,8 +1713,7 @@ class LiveStore:
                 c.fetched_at,
                 c.ingested_at
             FROM station_current_state c
-            JOIN stations s ON s.station_id = c.station_id
-            WHERE s.station_id IN ({placeholders})
+            WHERE c.station_id IN ({placeholders})
         """
 
         with self.connection() as conn:

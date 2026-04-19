@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
+from .receipt_queue import ReceiptQueue
 from .store import LiveStore
 
 LATEST_ATTRIBUTE_FIELDS = (
@@ -213,6 +214,7 @@ def build_bundle_live_status_report(
     *,
     store: LiveStore,
     geojson_path: Path,
+    receipt_queue_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     bundle_summary = load_bundle_station_summary(geojson_path)
     bundle_station_ids = bundle_summary["station_ids"]
@@ -342,6 +344,8 @@ def build_bundle_live_status_report(
                 "enabled": bool(provider.get("enabled")) if provider else False,
                 "fetch_kind": str(provider.get("fetch_kind") or ""),
                 "delta_delivery": bool(provider.get("delta_delivery")) if provider else False,
+                "delivery_mode": str(provider.get("delivery_mode") or "poll_only"),
+                "push_fallback_after_seconds": int(provider.get("push_fallback_after_seconds") or 0) or None,
                 "stations_with_any_live_observation": len(full_provider_station_ids),
                 "stations_with_any_live_observation_in_bundle": len(bundle_provider_station_ids),
                 "observation_rows": int(aggregate.get("observation_rows", 0) or 0),
@@ -410,6 +414,7 @@ def build_bundle_live_status_report(
         "provider_station_overlap_excess": provider_station_count_sum - len(observed_full_station_ids),
         "provider_bundle_station_count_sum": provider_bundle_station_count_sum,
         "provider_bundle_station_overlap_excess": provider_bundle_station_count_sum - len(observed_bundle_station_ids),
+        "receipt_queue": receipt_queue_stats or {},
         "providers": provider_items,
     }
 
@@ -421,4 +426,5 @@ def build_status_report(config: AppConfig | None = None, store: LiveStore | None
     return build_bundle_live_status_report(
         store=effective_store,
         geojson_path=effective_config.chargers_geojson_path,
+        receipt_queue_stats=ReceiptQueue(effective_config).stats(),
     )

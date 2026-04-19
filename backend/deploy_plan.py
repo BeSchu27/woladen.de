@@ -20,6 +20,7 @@ RESTART_SERVICE_PATHS = {
     "requirements-live.txt",
     "scripts/live_api.py",
     "scripts/live_ingester.py",
+    "scripts/live_queue_worker.py",
 }
 BOOTSTRAP_RUNTIME_PATHS = {
     "data/chargers_fast.csv",
@@ -31,6 +32,7 @@ RELOAD_CADDY_PATHS = {"deploy/ionos/Caddyfile"}
 DAEMON_RELOAD_PATHS = {
     "deploy/ionos/woladen-live-api.service",
     "deploy/ionos/woladen-live-ingester.service",
+    "deploy/ionos/woladen-live-queue-worker.service",
 }
 
 
@@ -114,4 +116,3 @@ def classify_deploy_plan(changed_paths: tuple[str, ...]) -> DeployPlan:
         refresh_venv=refresh_venv,
         reasons=tuple(reasons),
     )
-

@@ -299,7 +299,8 @@ install -d -m 0755 "$INSTALL_ROOT" "$CONFIG_DIR" "$RELEASES_DIR"
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" \
   "$STATE_DIR" \
   "$STATE_DIR/live_raw" \
-  "$STATE_DIR/live_archives"
+  "$STATE_DIR/live_archives" \
+  "$STATE_DIR/live_queue"
 migrate_legacy_current_dir
 CURRENT_RELEASE_DIR=$(resolve_current_release_dir)
 
@@ -358,6 +359,9 @@ render_template \
 render_template \
   "$RELEASE_DIR/deploy/ionos/woladen-live-ingester.service" \
   /etc/systemd/system/woladen-live-ingester.service
+render_template \
+  "$RELEASE_DIR/deploy/ionos/woladen-live-queue-worker.service" \
+  /etc/systemd/system/woladen-live-queue-worker.service
 render_managed_caddyfile
 render_template \
   "$RELEASE_DIR/deploy/ionos/woladen-live-log-archive.cron" \
@@ -379,11 +383,11 @@ if systemctl list-unit-files cron.service >/dev/null 2>&1; then
 fi
 
 if [[ $ENABLE_SERVICES -eq 1 ]]; then
-  systemctl enable woladen-live-api.service woladen-live-ingester.service
+  systemctl enable woladen-live-api.service woladen-live-ingester.service woladen-live-queue-worker.service
 fi
 
 if [[ $START_SERVICES -eq 1 ]]; then
-  systemctl restart woladen-live-api.service woladen-live-ingester.service
+  systemctl restart woladen-live-api.service woladen-live-ingester.service woladen-live-queue-worker.service
 fi
 
 cat <<EOF

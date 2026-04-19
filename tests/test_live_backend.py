@@ -23,7 +23,7 @@ from backend.fetcher import CurlFetcher
 from backend.loaders import load_evse_matches, load_provider_targets, load_site_matches
 from backend.models import FetchResponse
 from backend.service import IngestionService
-from backend.store import LiveStore
+from backend.store import LiveStore, utc_now_iso
 from backend.subscriptions import (
     SubscriptionOffer,
     build_subscription_registry,
@@ -525,6 +525,32 @@ def test_load_provider_targets_merges_subscription_registry(app_config):
     assert ampeco.fetch_kind == "mtls_subscription"
     assert ampeco.subscription_id == "2000001"
     assert ampeco.fetch_url.endswith("subscriptionID=2000001")
+
+
+def test_load_provider_targets_merges_delivery_mode_and_push_fallback(app_config):
+    _write_provider_fixture(app_config.provider_config_path)
+    app_config.subscription_registry_path.write_text(
+        json.dumps(
+            {
+                "ampeco": {
+                    "enabled": True,
+                    "fetch_kind": "mtls_subscription",
+                    "subscription_id": "2000001",
+                    "delivery_mode": "push_with_poll_fallback",
+                    "push_fallback_after_seconds": 420,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    providers = load_provider_targets(
+        app_config.provider_config_path,
+        subscription_registry_path=app_config.subscription_registry_path,
+    )
+
+    ampeco = [provider for provider in providers if provider.provider_uid == "ampeco"][0]
+    assert ampeco.delivery_mode == "push_with_poll_fallback"
+    assert ampeco.push_fallback_after_seconds == 420
 
 
 def test_load_provider_targets_adds_synthetic_direct_url_provider(app_config):
@@ -1462,6 +1488,39 @@ def test_round_robin_picks_never_polled_provider_first(app_config):
     assert provider["provider_uid"] == "qwello"
 
 
+def test_round_robin_skips_recent_push_provider_until_fallback(app_config):
+    _write_subscription_registry(app_config.subscription_registry_path)
+    app_config.subscription_registry_path.write_text(
+        json.dumps(
+            {
+                "ampeco": {
+                    "enabled": True,
+                    "fetch_kind": "mtls_subscription",
+                    "subscription_id": "2000001",
+                    "delivery_mode": "push_with_poll_fallback",
+                    "push_fallback_after_seconds": 300,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    fetcher = MockFetcher(
+        {
+            "qwello": FetchResponse(json.dumps(_dynamic_payload()).encode("utf-8"), "application/json", 200),
+            "ampeco": TimeoutError("skip"),
+        }
+    )
+    service = _build_service(app_config, fetcher)
+    service.bootstrap()
+
+    push_run_id = service.store.start_push_run("ampeco", subscription_id="2000001", received_at=utc_now_iso())
+    service.store.finish_push_run(push_run_id, provider_uid="ampeco", result="ok", received_at=utc_now_iso())
+
+    provider = service.store.get_next_provider_for_round_robin()
+    assert provider is not None
+    assert provider["provider_uid"] == "qwello"
+
+
 def test_curl_fetcher_uses_machine_certificate_and_gzip_header(app_config, monkeypatch):
     commands = []
 
@@ -1896,12 +1955,17 @@ def test_push_ingestion_normalizes_unknown_status_to_out_of_order(app_config):
     assert evse["current"]["operational_status"] == "UNKNOWN"
 
 
-def test_api_push_endpoint_accepts_post_and_head(app_config):
+def test_api_push_endpoint_accepts_get_post_and_head(app_config):
     _write_subscription_registry(app_config.subscription_registry_path)
     _write_provider_fixture(app_config.provider_config_path)
     _write_matches_fixture(app_config.site_match_path)
     _write_chargers_fixture(app_config.chargers_csv_path)
-    client = TestClient(create_app(app_config))
+    app = create_app(app_config)
+    client = TestClient(app)
+
+    get_response = client.get("/v1/push/ampeco")
+    assert get_response.status_code == 200
+    assert get_response.json() == {"ok": True, "provider_uid": "ampeco"}
 
     head_response = client.head("/v1/push/ampeco")
     assert head_response.status_code == 200
@@ -1916,6 +1980,7 @@ def test_api_push_endpoint_accepts_post_and_head(app_config):
     )
     assert push_response.status_code == 200
     assert push_response.content == b""
+    app.state.ingestion_service.drain_receipt_queue()
 
     store = LiveStore(app_config)
     evse = store.get_evse_detail("ampeco", "DEQWEE1")

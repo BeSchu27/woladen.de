@@ -301,7 +301,7 @@ wait_for_api_health() {
 
   echo "Live API health check failed after waiting for startup: $health_url" >&2
   sudo_cmd systemctl --no-pager --full status woladen-live-api.service || true
-  sudo_cmd journalctl -u woladen-live-api.service -u woladen-live-ingester.service -n 100 --no-pager || true
+  sudo_cmd journalctl -u woladen-live-api.service -u woladen-live-ingester.service -u woladen-live-queue-worker.service -n 100 --no-pager || true
   return 1
 }
 
@@ -388,6 +388,7 @@ fi
 if [[ -f "$remote_tmp_dir/huggingface.token" ]]; then
   upsert_env_value "WOLADEN_LIVE_HF_ARCHIVE_TOKEN_FILE" "$hf_token_target"
 fi
+upsert_env_value "WOLADEN_LIVE_QUEUE_DIR" "$state_dir/live_queue"
 
 should_restart=$DEPLOY_PLAN_RESTART_SERVICES
 should_bootstrap=$DEPLOY_PLAN_BOOTSTRAP_RUNTIME
@@ -402,7 +403,7 @@ if [[ $should_restart -eq 1 ]]; then
 fi
 
 if [[ $should_restart -eq 1 ]]; then
-  sudo_cmd systemctl restart woladen-live-api.service woladen-live-ingester.service
+  sudo_cmd systemctl restart woladen-live-api.service woladen-live-ingester.service woladen-live-queue-worker.service
 elif [[ $should_bootstrap -eq 1 ]]; then
   sudo_cmd -u "$app_user" "$venv_dir/bin/python" "$current_link/scripts/live_ingester.py" --bootstrap-only >/dev/null
 fi

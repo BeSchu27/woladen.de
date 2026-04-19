@@ -89,6 +89,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     store = LiveStore(effective_config)
     store.initialize()
     ingestion_service = IngestionService(effective_config, store=store)
+    station_catalog_path = effective_config.full_chargers_csv_path or effective_config.chargers_csv_path
+    if (
+        effective_config.provider_config_path.exists()
+        and effective_config.site_match_path.exists()
+        and station_catalog_path.exists()
+    ):
+        ingestion_service.bootstrap()
+    else:
+        ingestion_service.receipt_queue.initialize()
     cors_origin_regex = effective_config.api_cors_allowed_origin_regex or None
 
     app = FastAPI(title="woladen live API", version="0.1.0")
@@ -102,6 +111,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.config = effective_config
     app.state.store = store
     app.state.ingestion_service = ingestion_service
+    app.state.receipt_queue = ingestion_service.receipt_queue
 
     @app.get("/healthz")
     def healthz() -> dict[str, bool]:
@@ -113,12 +123,21 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return build_bundle_live_status_report(
             store=app.state.store,
             geojson_path=app.state.config.chargers_geojson_path,
+            receipt_queue_stats=app.state.receipt_queue.stats(),
         )
 
     @app.head("/v1/push")
     @app.head("/v1/push/{provider_uid}")
     def push_healthcheck(provider_uid: str = "") -> Response:
         return Response(status_code=200)
+
+    @app.get("/v1/push")
+    @app.get("/v1/push/{provider_uid}")
+    def push_probe(provider_uid: str = "") -> dict[str, bool | str | None]:
+        return {
+            "ok": True,
+            "provider_uid": provider_uid or None,
+        }
 
     @app.post("/v1/push")
     @app.post("/v1/push/{provider_uid}")
@@ -129,7 +148,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         publication_id = _request_lookup_value(request, PUBLICATION_LOOKUP_KEYS)
 
         try:
-            app.state.ingestion_service.ingest_push(
+            app.state.ingestion_service.receive_push(
                 provider_uid=resolved_provider_uid,
                 subscription_id=subscription_id,
                 publication_id=publication_id,

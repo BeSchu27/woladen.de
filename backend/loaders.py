@@ -46,6 +46,15 @@ def _load_json_object(path: Path | None) -> dict[str, Any]:
     raise ValueError(f"expected_json_object:{path}")
 
 
+def _normalize_delivery_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"push", "push_only"}:
+        return "push_only"
+    if normalized in {"push_with_poll_fallback", "push_or_poll", "push_with_fallback"}:
+        return "push_with_poll_fallback"
+    return "poll_only"
+
+
 def _provider_uid_from_detail_source_uid(value: Any) -> str:
     text = str(value or "").strip()
     prefix = "mobilithek_"
@@ -105,6 +114,8 @@ def load_provider_targets(
         )
         subscription_id = ""
         enabled = access_mode == "noauth"
+        delivery_mode = "poll_only"
+        push_fallback_after_seconds: int | None = None
 
         provider_uid = str(provider.get("uid") or "").strip()
         if not provider_uid:
@@ -124,6 +135,8 @@ def load_provider_targets(
             delta_delivery = bool(merged_override.get("delta_delivery"))
         if "retention_period_minutes" in merged_override:
             retention_period_minutes = _to_optional_int(merged_override.get("retention_period_minutes"))
+        delivery_mode = _normalize_delivery_mode(merged_override.get("delivery_mode"))
+        push_fallback_after_seconds = _to_optional_int(merged_override.get("push_fallback_after_seconds"))
         if fetch_kind == "mtls_subscription" and subscription_id:
             fetch_url = DATEX_V3_SUBSCRIPTION_URL.format(subscription_id=subscription_id)
         elif fetch_kind == "direct_url":
@@ -145,6 +158,8 @@ def load_provider_targets(
                 enabled=enabled,
                 delta_delivery=delta_delivery,
                 retention_period_minutes=retention_period_minutes,
+                delivery_mode=delivery_mode,
+                push_fallback_after_seconds=push_fallback_after_seconds,
             )
         )
 
@@ -167,6 +182,8 @@ def load_provider_targets(
         delta_delivery = bool(merged_override.get("delta_delivery"))
         retention_period_minutes = _to_optional_int(merged_override.get("retention_period_minutes"))
         enabled = bool(merged_override.get("enabled", True))
+        delivery_mode = _normalize_delivery_mode(merged_override.get("delivery_mode"))
+        push_fallback_after_seconds = _to_optional_int(merged_override.get("push_fallback_after_seconds"))
         if fetch_kind == "mtls_subscription" and subscription_id:
             fetch_url = DATEX_V3_SUBSCRIPTION_URL.format(subscription_id=subscription_id)
 
@@ -183,6 +200,8 @@ def load_provider_targets(
                 enabled=enabled,
                 delta_delivery=delta_delivery,
                 retention_period_minutes=retention_period_minutes,
+                delivery_mode=delivery_mode,
+                push_fallback_after_seconds=push_fallback_after_seconds,
             )
         )
 
