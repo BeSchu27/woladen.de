@@ -1021,6 +1021,45 @@ def test_ingestion_persists_dynamic_slot_and_supplemental_fields(app_config):
     ]
 
 
+def test_ingestion_materializes_station_detail_json_on_station_current_state(app_config):
+    payload = json.dumps(
+        _dynamic_payload_with_energy_rate_update(
+            price_kwh=0.5,
+            next_slots=[
+                {
+                    "expectedAvailableFromTime": "2026-04-15T09:15:00+00:00",
+                    "expectedAvailableUntilTime": "2026-04-15T09:45:00+00:00",
+                }
+            ],
+            supplemental_status=["parkingRestricted"],
+        )
+    ).encode("utf-8")
+    fetcher = MockFetcher({"qwello": FetchResponse(payload, "application/json", 200), "ampeco": TimeoutError("skip")})
+    service = _build_service(app_config, fetcher)
+
+    result = service.ingest_provider("qwello")
+
+    assert result["result"] == "ok"
+    with service.store.connection() as conn:
+        row = conn.execute(
+            "SELECT evses_json FROM station_current_state WHERE station_id = ?",
+            ("station-1",),
+        ).fetchone()
+
+    assert row is not None
+    evses = json.loads(row["evses_json"])
+    assert len(evses) == 1
+    assert evses[0]["provider_evse_id"] == "DEQWEE1"
+    assert evses[0]["price_energy_eur_kwh_min"] == "0.5"
+    assert evses[0]["next_available_charging_slots"] == [
+        {
+            "expectedAvailableFromTime": "2026-04-15T09:15:00+00:00",
+            "expectedAvailableUntilTime": "2026-04-15T09:45:00+00:00",
+        }
+    ]
+    assert evses[0]["supplemental_facility_status"] == ["parkingRestricted"]
+
+
 def test_ingestion_persists_observations_current_state_and_change_flags(app_config):
     first_payload = json.dumps(_dynamic_payload()).encode("utf-8")
     second_payload = json.dumps(_dynamic_payload(status="AVAILABLE")).encode("utf-8")
@@ -1304,6 +1343,38 @@ def test_initialize_drops_legacy_evse_observation_history(app_config):
     assert row is None
 
 
+def test_initialize_creates_station_lookup_index_for_evse_current_state(app_config):
+    store = LiveStore(app_config)
+    store.initialize()
+
+    conn = sqlite3.connect(app_config.db_path)
+    try:
+        index_names = {
+            str(row[1])
+            for row in conn.execute("PRAGMA index_list('evse_current_state')").fetchall()
+        }
+        index_columns = [
+            str(row[2])
+            for row in conn.execute("PRAGMA index_info('idx_evse_current_state_station_lookup')").fetchall()
+        ]
+        plan_rows = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT *
+            FROM evse_current_state
+            WHERE station_id = ?
+            ORDER BY provider_uid, provider_evse_id
+            """,
+            ("station-1",),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert "idx_evse_current_state_station_lookup" in index_names
+    assert index_columns == ["station_id", "provider_uid", "provider_evse_id"]
+    assert any("idx_evse_current_state_station_lookup" in str(row[3]) for row in plan_rows)
+
+
 def test_initialize_migrates_descriptive_price_columns_to_text(app_config):
     conn = sqlite3.connect(app_config.db_path)
     try:
@@ -1496,6 +1567,7 @@ def test_initialize_migrates_descriptive_price_columns_to_text(app_config):
     assert evse_columns["price_energy_eur_kwh_max"] == "TEXT"
     assert station_columns["price_energy_eur_kwh_min"] == "TEXT"
     assert station_columns["price_energy_eur_kwh_max"] == "TEXT"
+    assert station_columns["evses_json"] == "TEXT"
 
     evse = store.get_evse_detail("qwello", "DEQWEE1")
     assert evse is not None
@@ -1506,6 +1578,9 @@ def test_initialize_migrates_descriptive_price_columns_to_text(app_config):
     assert station is not None
     assert station["station"]["price_energy_eur_kwh_min"] == "0.59"
     assert station["station"]["price_energy_eur_kwh_max"] == "0.79"
+    assert len(station["evses"]) == 1
+    assert station["evses"][0]["provider_evse_id"] == "DEQWEE1"
+    assert station["evses"][0]["price_energy_eur_kwh_min"] == "0.59"
 
 
 def test_round_robin_picks_never_polled_provider_first(app_config):
@@ -1616,11 +1691,38 @@ def test_api_station_lookup_returns_requested_station_ids(app_config):
         assert key not in payload["stations"][0]
 
 
+def test_api_profile_headers_expose_server_timing_breakdown(app_config):
+    payload = json.dumps(_dynamic_payload()).encode("utf-8")
+    fetcher = MockFetcher({"qwello": FetchResponse(payload, "application/json", 200), "ampeco": TimeoutError("skip")})
+    service = _build_service(app_config, fetcher)
+    service.ingest_provider("qwello")
+
+    client = TestClient(create_app(app_config))
+    response = client.post(
+        "/v1/stations/lookup?profile=1",
+        json={"station_ids": ["station-1", "missing"]},
+        headers={"Origin": "http://127.0.0.1:4173"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["timing-allow-origin"] == "*"
+    expose_headers = {
+        item.strip().lower()
+        for item in response.headers["access-control-expose-headers"].split(",")
+        if item.strip()
+    }
+    assert {"server-timing", "timing-allow-origin", "content-length"} <= expose_headers
+
+    server_timing = response.headers["server-timing"]
+    for metric_name in ("db-query", "db-decode", "payload", "json-encode", "app"):
+        assert f"{metric_name};dur=" in server_timing
+
+
 def test_api_clamps_station_list_limit_to_100(app_config):
     app = create_app(app_config)
     captured: dict[str, int] = {}
 
-    def fake_list_station_summaries(*, provider_uid="", status="", limit=100, offset=0):
+    def fake_list_station_summaries(*, provider_uid="", status="", limit=100, offset=0, timings=None):
         captured["limit"] = limit
         return []
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+import time
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import AppConfig
@@ -35,6 +37,8 @@ PUBLICATION_LOOKUP_KEYS = (
     "x-publication-id",
     "x-mobilithek-publication-id",
 )
+PROFILE_FLAG_VALUES = {"1", "true", "yes", "on"}
+PROFILE_HEADER_NAMES = ("Server-Timing", "Timing-Allow-Origin", "Content-Length")
 
 
 class StationLookupRequest(BaseModel):
@@ -84,6 +88,65 @@ def _request_lookup_value(request: Request, keys: tuple[str, ...]) -> str:
     return ""
 
 
+def _profiling_enabled(request: Request) -> bool:
+    profile_value = (
+        request.query_params.get("profile")
+        or request.headers.get("x-woladen-profile")
+        or ""
+    )
+    return str(profile_value).strip().lower() in PROFILE_FLAG_VALUES
+
+
+def _record_profile_metric(request: Request, metric_name: str, duration_ms: float, description: str = "") -> None:
+    if not getattr(request.state, "profiling_enabled", False):
+        return
+    metrics = getattr(request.state, "profiling_metrics", None)
+    if metrics is None:
+        metrics = {}
+        request.state.profiling_metrics = metrics
+    metric = metrics.setdefault(metric_name, {"duration_ms": 0.0, "description": description})
+    metric["duration_ms"] += max(float(duration_ms), 0.0)
+    if description and not metric.get("description"):
+        metric["description"] = description
+
+
+def _record_store_timings(request: Request, timings: dict[str, float] | None) -> None:
+    if not timings:
+        return
+    metric_map = {
+        "db_query_ms": ("db-query", "SQLite query"),
+        "db_decode_ms": ("db-decode", "SQLite row decode"),
+    }
+    for key, duration_ms in timings.items():
+        metric_name, description = metric_map.get(key, (key.replace("_", "-"), ""))
+        _record_profile_metric(request, metric_name, duration_ms, description)
+
+
+def _server_timing_header_value(request: Request) -> str:
+    metrics = getattr(request.state, "profiling_metrics", {}) or {}
+    header_parts: list[str] = []
+    for metric_name, metric in metrics.items():
+        part = f"{metric_name};dur={metric['duration_ms']:.3f}"
+        description = str(metric.get("description") or "").strip()
+        if description:
+            escaped = description.replace("\\", "\\\\").replace('"', '\\"')
+            part += f';desc="{escaped}"'
+        header_parts.append(part)
+    return ", ".join(header_parts)
+
+
+def _json_response(request: Request, payload: object, *, status_code: int = 200) -> JSONResponse:
+    encode_started_at = time.perf_counter()
+    response = JSONResponse(content=payload, status_code=status_code)
+    _record_profile_metric(
+        request,
+        "json-encode",
+        (time.perf_counter() - encode_started_at) * 1000.0,
+        "JSON encode",
+    )
+    return response
+
+
 def create_app(config: AppConfig | None = None) -> FastAPI:
     effective_config = config or AppConfig()
     store = LiveStore(effective_config)
@@ -107,11 +170,31 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         allow_origin_regex=cors_origin_regex,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=list(PROFILE_HEADER_NAMES),
     )
     app.state.config = effective_config
     app.state.store = store
     app.state.ingestion_service = ingestion_service
     app.state.receipt_queue = ingestion_service.receipt_queue
+
+    @app.middleware("http")
+    async def add_request_timing(request: Request, call_next):
+        request.state.profiling_enabled = _profiling_enabled(request)
+        request.state.profiling_metrics = {}
+        request_started_at = time.perf_counter()
+        response = await call_next(request)
+        response.headers.setdefault("Timing-Allow-Origin", "*")
+        if request.state.profiling_enabled:
+            _record_profile_metric(
+                request,
+                "app",
+                (time.perf_counter() - request_started_at) * 1000.0,
+                "Total app time",
+            )
+            server_timing = _server_timing_header_value(request)
+            if server_timing:
+                response.headers["Server-Timing"] = server_timing
+        return response
 
     @app.get("/healthz")
     def healthz() -> dict[str, bool]:
@@ -178,46 +261,89 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.get("/v1/stations")
     def list_stations(
+        request: Request,
         provider_uid: str = Query(default=""),
         status: str = Query(default="", pattern="^(|free|occupied|out_of_order|unknown)$"),
         limit: int = Query(default=100, ge=1),
         offset: int = Query(default=0, ge=0),
-    ) -> list[dict]:
+    ) -> JSONResponse:
+        timings: dict[str, float] | None = {} if request.state.profiling_enabled else None
         rows = app.state.store.list_station_summaries(
             provider_uid=provider_uid,
             status=status,
             limit=min(limit, 100),
             offset=offset,
+            timings=timings,
         )
-        return [_serialize_station_summary(row) for row in rows]
+        _record_store_timings(request, timings)
+        payload_started_at = time.perf_counter()
+        payload = [_serialize_station_summary(row) for row in rows]
+        _record_profile_metric(
+            request,
+            "payload",
+            (time.perf_counter() - payload_started_at) * 1000.0,
+            "Response shaping",
+        )
+        return _json_response(request, payload)
 
     @app.post("/v1/stations/lookup")
-    def lookup_stations(payload: StationLookupRequest) -> dict[str, list[dict] | list[str]]:
+    def lookup_stations(request: Request, payload: StationLookupRequest) -> JSONResponse:
         station_ids = [str(station_id or "").strip() for station_id in payload.station_ids]
         station_ids = [station_id for station_id in station_ids if station_id]
-        stations = app.state.store.list_station_summaries_by_ids(station_ids)
+        timings: dict[str, float] | None = {} if request.state.profiling_enabled else None
+        stations = app.state.store.list_station_summaries_by_ids(station_ids, timings=timings)
+        _record_store_timings(request, timings)
+        payload_started_at = time.perf_counter()
         found_station_ids = {str(station["station_id"]) for station in stations}
         missing_station_ids = [station_id for station_id in station_ids if station_id not in found_station_ids]
-        return {
+        response_payload = {
             "stations": [_serialize_station_summary(station) for station in stations],
             "missing_station_ids": missing_station_ids,
         }
+        _record_profile_metric(
+            request,
+            "payload",
+            (time.perf_counter() - payload_started_at) * 1000.0,
+            "Response shaping",
+        )
+        return _json_response(request, response_payload)
 
     @app.get("/v1/stations/{station_id}")
-    def station_detail(station_id: str) -> dict:
-        payload = app.state.store.get_station_detail(station_id)
+    def station_detail(request: Request, station_id: str) -> JSONResponse:
+        timings: dict[str, float] | None = {} if request.state.profiling_enabled else None
+        payload = app.state.store.get_station_detail(station_id, timings=timings)
+        _record_store_timings(request, timings)
         if payload is None:
             raise HTTPException(status_code=404, detail="station_not_found")
-        return _serialize_station_detail(payload)
+        payload_started_at = time.perf_counter()
+        response_payload = _serialize_station_detail(payload)
+        _record_profile_metric(
+            request,
+            "payload",
+            (time.perf_counter() - payload_started_at) * 1000.0,
+            "Response shaping",
+        )
+        return _json_response(request, response_payload)
 
     @app.get("/v1/evses/{provider_uid}/{provider_evse_id}")
     def evse_detail(
+        request: Request,
         provider_uid: str,
         provider_evse_id: str,
-    ) -> dict:
-        payload = app.state.store.get_evse_detail(provider_uid, provider_evse_id)
+    ) -> JSONResponse:
+        timings: dict[str, float] | None = {} if request.state.profiling_enabled else None
+        payload = app.state.store.get_evse_detail(provider_uid, provider_evse_id, timings=timings)
+        _record_store_timings(request, timings)
         if payload is None:
             raise HTTPException(status_code=404, detail="evse_not_found")
-        return _serialize_evse_detail(payload)
+        payload_started_at = time.perf_counter()
+        response_payload = _serialize_evse_detail(payload)
+        _record_profile_metric(
+            request,
+            "payload",
+            (time.perf_counter() - payload_started_at) * 1000.0,
+            "Response shaping",
+        )
+        return _json_response(request, response_payload)
 
     return app

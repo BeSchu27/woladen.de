@@ -61,6 +61,13 @@ def _seconds_until_iso(value: str | None) -> float | None:
     return (target - datetime.now(timezone.utc)).total_seconds()
 
 
+def _record_timing_metric(timings: dict[str, float] | None, metric_name: str, started_at: float) -> None:
+    if timings is None:
+        return
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    timings[metric_name] = timings.get(metric_name, 0.0) + elapsed_ms
+
+
 class LiveStore:
     def __init__(self, config: AppConfig):
         self.config = config
@@ -259,7 +266,8 @@ class LiveStore:
                     price_complex INTEGER NOT NULL DEFAULT 0,
                     source_observed_at TEXT NOT NULL,
                     fetched_at TEXT NOT NULL,
-                    ingested_at TEXT NOT NULL
+                    ingested_at TEXT NOT NULL,
+                    evses_json TEXT NOT NULL DEFAULT '[]'
                 );
                 CREATE INDEX IF NOT EXISTS idx_provider_poll_runs_provider
                     ON provider_poll_runs (provider_uid, started_at DESC);
@@ -270,6 +278,7 @@ class LiveStore:
             self._ensure_provider_columns(conn)
             self._ensure_run_columns(conn)
             self._ensure_live_state_columns(conn)
+            self._ensure_indexes(conn)
             dropped_legacy_history = self._drop_legacy_observation_storage(conn)
         if dropped_legacy_history:
             self._vacuum_database()
@@ -299,12 +308,15 @@ class LiveStore:
         conn: sqlite3.Connection,
         table_name: str,
         additions: list[tuple[str, str]],
-    ) -> None:
+    ) -> set[str]:
         existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+        added_columns: set[str] = set()
         for column_name, definition in additions:
             if column_name in existing:
                 continue
             conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+            added_columns.add(column_name)
+        return added_columns
 
     def _ensure_live_state_columns(self, conn: sqlite3.Connection) -> None:
         additions = [
@@ -313,6 +325,13 @@ class LiveStore:
         ]
         self._ensure_table_columns(conn, "evse_current_state", additions)
         self._migrate_live_state_price_columns(conn)
+        self._ensure_table_columns(
+            conn,
+            "station_current_state",
+            [("evses_json", "TEXT NOT NULL DEFAULT '[]'")],
+        )
+        if self._station_detail_backfill_needed(conn):
+            self._backfill_station_detail_json(conn)
 
     def _ensure_run_columns(self, conn: sqlite3.Connection) -> None:
         additions = [
@@ -323,6 +342,14 @@ class LiveStore:
         ]
         self._ensure_table_columns(conn, "provider_poll_runs", additions)
         self._ensure_table_columns(conn, "provider_push_runs", additions)
+
+    def _ensure_indexes(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_evse_current_state_station_lookup
+            ON evse_current_state (station_id, provider_uid, provider_evse_id)
+            """
+        )
 
     def _live_state_table_needs_price_migration(self, conn: sqlite3.Connection, table_name: str) -> bool:
         column_types = {
@@ -436,7 +463,8 @@ class LiveStore:
                     price_complex INTEGER NOT NULL DEFAULT 0,
                     source_observed_at TEXT NOT NULL,
                     fetched_at TEXT NOT NULL,
-                    ingested_at TEXT NOT NULL
+                    ingested_at TEXT NOT NULL,
+                    evses_json TEXT NOT NULL DEFAULT '[]'
                 );
                 """
             )
@@ -460,7 +488,8 @@ class LiveStore:
                     price_complex,
                     source_observed_at,
                     fetched_at,
-                    ingested_at
+                    ingested_at,
+                    evses_json
                 )
                 SELECT
                     station_id,
@@ -480,11 +509,68 @@ class LiveStore:
                     price_complex,
                     source_observed_at,
                     fetched_at,
-                    ingested_at
+                    ingested_at,
+                    '[]'
                 FROM station_current_state__legacy_price_columns
                 """
             )
             conn.execute("DROP TABLE station_current_state__legacy_price_columns")
+
+    def _station_detail_backfill_needed(self, conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM station_current_state
+            WHERE total_evses > 0
+              AND COALESCE(evses_json, '[]') IN ('', '[]')
+            LIMIT 1
+            """
+        ).fetchone()
+        return row is not None
+
+    def _station_detail_evses_json(self, station_rows: list[sqlite3.Row | dict[str, Any]]) -> str:
+        evses = [self._deserialize_live_row(row) for row in station_rows]
+        return json.dumps(evses, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _backfill_station_detail_json(self, conn: sqlite3.Connection) -> None:
+        station_rows = conn.execute(
+            """
+            SELECT station_id
+            FROM station_current_state
+            WHERE total_evses > 0
+              AND COALESCE(evses_json, '[]') IN ('', '[]')
+            ORDER BY station_id
+            """
+        ).fetchall()
+        station_ids = [str(row["station_id"] or "").strip() for row in station_rows if str(row["station_id"] or "").strip()]
+        if not station_ids:
+            return
+
+        placeholders = ", ".join(["?"] * len(station_ids))
+        evse_rows = conn.execute(
+            f"""
+            SELECT *
+            FROM evse_current_state
+            WHERE station_id IN ({placeholders})
+            ORDER BY station_id, provider_uid, provider_evse_id
+            """,
+            tuple(station_ids),
+        ).fetchall()
+
+        rows_by_station_id: dict[str, list[sqlite3.Row]] = {station_id: [] for station_id in station_ids}
+        for row in evse_rows:
+            rows_by_station_id.setdefault(str(row["station_id"]), []).append(row)
+
+        update_rows = [
+            (self._station_detail_evses_json(rows_by_station_id[station_id]), station_id)
+            for station_id in station_ids
+            if rows_by_station_id.get(station_id)
+        ]
+        if update_rows:
+            conn.executemany(
+                "UPDATE station_current_state SET evses_json = ? WHERE station_id = ?",
+                update_rows,
+            )
 
     def _drop_legacy_observation_storage(self, conn: sqlite3.Connection) -> bool:
         table_exists = (
@@ -1821,6 +1907,7 @@ class LiveStore:
                     source_observed_at,
                     fetched_at,
                     ingested_at,
+                    self._station_detail_evses_json(station_rows),
                 )
             )
 
@@ -1831,8 +1918,9 @@ class LiveStore:
                     station_id, provider_uid, availability_status, available_evses, occupied_evses,
                     out_of_order_evses, unknown_evses, total_evses, price_display, price_currency,
                     price_energy_eur_kwh_min, price_energy_eur_kwh_max, price_time_eur_min_min,
-                    price_time_eur_min_max, price_complex, source_observed_at, fetched_at, ingested_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    price_time_eur_min_max, price_complex, source_observed_at, fetched_at, ingested_at,
+                    evses_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(station_id) DO UPDATE SET
                     provider_uid=excluded.provider_uid,
                     availability_status=excluded.availability_status,
@@ -1850,7 +1938,8 @@ class LiveStore:
                     price_complex=excluded.price_complex,
                     source_observed_at=excluded.source_observed_at,
                     fetched_at=excluded.fetched_at,
-                    ingested_at=excluded.ingested_at
+                    ingested_at=excluded.ingested_at,
+                    evses_json=excluded.evses_json
                 """,
                 upsert_rows,
             )
@@ -1862,6 +1951,7 @@ class LiveStore:
         status: str = "",
         limit: int = 100,
         offset: int = 0,
+        timings: dict[str, float] | None = None,
     ) -> list[dict[str, Any]]:
         sql = """
             SELECT
@@ -1895,10 +1985,22 @@ class LiveStore:
             params.append(status)
         sql += " ORDER BY c.fetched_at DESC, c.station_id LIMIT ? OFFSET ?"
         params.extend([limit, offset])
+        query_started_at = time.perf_counter()
         with self.connection() as conn:
-            return [self._deserialize_live_row(row) for row in conn.execute(sql, tuple(params)).fetchall()]
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        _record_timing_metric(timings, "db_query_ms", query_started_at)
 
-    def list_station_summaries_by_ids(self, station_ids: Iterable[str]) -> list[dict[str, Any]]:
+        decode_started_at = time.perf_counter()
+        decoded_rows = [self._deserialize_live_row(row) for row in rows]
+        _record_timing_metric(timings, "db_decode_ms", decode_started_at)
+        return decoded_rows
+
+    def list_station_summaries_by_ids(
+        self,
+        station_ids: Iterable[str],
+        *,
+        timings: dict[str, float] | None = None,
+    ) -> list[dict[str, Any]]:
         ordered_station_ids: list[str] = []
         seen_station_ids: set[str] = set()
         for station_id in station_ids:
@@ -1936,70 +2038,75 @@ class LiveStore:
             WHERE c.station_id IN ({placeholders})
         """
 
+        query_started_at = time.perf_counter()
         with self.connection() as conn:
             rows = conn.execute(sql, tuple(ordered_station_ids)).fetchall()
+        _record_timing_metric(timings, "db_query_ms", query_started_at)
 
+        decode_started_at = time.perf_counter()
         row_by_station_id = {str(row["station_id"]): self._deserialize_live_row(row) for row in rows}
-        return [row_by_station_id[station_id] for station_id in ordered_station_ids if station_id in row_by_station_id]
+        ordered_rows = [row_by_station_id[station_id] for station_id in ordered_station_ids if station_id in row_by_station_id]
+        _record_timing_metric(timings, "db_decode_ms", decode_started_at)
+        return ordered_rows
 
-    def get_station_detail(self, station_id: str) -> dict[str, Any] | None:
+    def get_station_detail(self, station_id: str, *, timings: dict[str, float] | None = None) -> dict[str, Any] | None:
         with self.connection() as conn:
+            query_started_at = time.perf_counter()
             current = conn.execute(
                 """
                 SELECT
-                    s.station_id,
-                    s.operator,
-                    s.address,
-                    s.postcode,
-                    s.city,
-                    s.lat,
-                    s.lon,
-                    s.charging_points_count,
-                    s.max_power_kw,
-                    c.provider_uid,
-                    c.availability_status,
-                    c.available_evses,
-                    c.occupied_evses,
-                    c.out_of_order_evses,
-                    c.unknown_evses,
-                    c.total_evses,
-                    c.price_display,
-                    c.price_currency,
-                    c.price_energy_eur_kwh_min,
-                    c.price_energy_eur_kwh_max,
-                    c.price_time_eur_min_min,
-                    c.price_time_eur_min_max,
-                    c.price_complex,
-                    c.source_observed_at,
-                    c.fetched_at,
-                    c.ingested_at
-                FROM station_current_state c
-                JOIN stations s ON s.station_id = c.station_id
-                WHERE s.station_id = ?
+                    station_id,
+                    provider_uid,
+                    availability_status,
+                    available_evses,
+                    occupied_evses,
+                    out_of_order_evses,
+                    unknown_evses,
+                    total_evses,
+                    price_display,
+                    price_currency,
+                    price_energy_eur_kwh_min,
+                    price_energy_eur_kwh_max,
+                    price_time_eur_min_min,
+                    price_time_eur_min_max,
+                    price_complex,
+                    source_observed_at,
+                    fetched_at,
+                    ingested_at,
+                    evses_json
+                FROM station_current_state
+                WHERE station_id = ?
                 """,
                 (station_id,),
             ).fetchone()
+            _record_timing_metric(timings, "db_query_ms", query_started_at)
             if current is None:
                 return None
 
-            current_evses = conn.execute(
-                """
-                SELECT *
-                FROM evse_current_state
-                WHERE station_id = ?
-                ORDER BY provider_uid, provider_evse_id
-                """,
-                (station_id,),
-            ).fetchall()
-
-        return {
-            "station": self._deserialize_live_row(current),
-            "evses": [self._deserialize_live_row(row) for row in current_evses],
+        decode_started_at = time.perf_counter()
+        station_payload = self._deserialize_live_row(current)
+        evses = self._json_field_value(station_payload.pop("evses_json", "[]"))
+        payload = {
+            "station": station_payload,
+            "evses": [
+                self._normalize_descriptive_price_fields(dict(item))
+                for item in evses
+                if isinstance(item, dict)
+            ],
             "recent_observations": [],
         }
+        _record_timing_metric(timings, "db_decode_ms", decode_started_at)
+        return payload
 
-    def get_evse_detail(self, provider_uid: str, provider_evse_id: str) -> dict[str, Any] | None:
+    def get_evse_detail(
+        self,
+        provider_uid: str,
+        provider_evse_id: str,
+        *,
+        timings: dict[str, float] | None = None,
+    ) -> dict[str, Any] | None:
         with self.connection() as conn:
+            query_started_at = time.perf_counter()
             current = conn.execute(
                 """
                 SELECT *
@@ -2008,9 +2115,13 @@ class LiveStore:
                 """,
                 (provider_uid, provider_evse_id),
             ).fetchone()
+            _record_timing_metric(timings, "db_query_ms", query_started_at)
             if current is None:
                 return None
-        return {
+        decode_started_at = time.perf_counter()
+        payload = {
             "current": self._deserialize_live_row(current),
             "recent_observations": [],
         }
+        _record_timing_metric(timings, "db_decode_ms", decode_started_at)
+        return payload
