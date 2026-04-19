@@ -2187,6 +2187,44 @@ def test_receipt_queue_prunes_old_done_and_failed_files(app_config):
     assert fresh_failed.exists() is True
 
 
+def test_receipt_queue_stats_ignores_pending_file_races(app_config, monkeypatch):
+    queue = ReceiptQueue(app_config)
+    queue.initialize()
+
+    first_task = queue.build_task(
+        task_kind="push",
+        provider_uid="ampeco",
+        run_id=1,
+        receipt_log_path=queue.root_dir / "receipt-1.log",
+        receipt_at="2026-04-19T17:59:40+00:00",
+    )
+    second_task = queue.build_task(
+        task_kind="push",
+        provider_uid="ampeco",
+        run_id=2,
+        receipt_log_path=queue.root_dir / "receipt-2.log",
+        receipt_at="2026-04-19T17:59:41+00:00",
+    )
+    first_path = queue.enqueue(first_task)
+    second_path = queue.enqueue(second_task)
+
+    real_read_task = queue._read_task
+
+    def flaky_read(path):
+        if path == first_path:
+            raise FileNotFoundError(path)
+        return real_read_task(path)
+
+    monkeypatch.setattr(queue, "_read_task", flaky_read)
+
+    stats = queue.stats()
+
+    assert stats["pending_count"] == 2
+    assert stats["oldest_pending_enqueued_at"] == second_task.enqueued_at
+    assert stats["oldest_pending_age_seconds"] is not None
+    assert second_path.exists() is True
+
+
 def test_push_ingestion_writes_timestamped_request_logs(app_config):
     service = _build_service(app_config, MockFetcher({"qwello": TimeoutError("skip"), "ampeco": TimeoutError("skip")}))
     result = service.ingest_push(

@@ -165,8 +165,13 @@ class ReceiptQueue:
         pending_paths = sorted(self.pending_dir.glob("*.json"))
         oldest_pending_age_seconds = None
         oldest_enqueued_at = None
-        if pending_paths:
-            oldest_task = self._read_task(pending_paths[0])
+        for pending_path in pending_paths:
+            try:
+                oldest_task = self._read_task(pending_path)
+            except FileNotFoundError:
+                # The queue worker can move a pending task to processing after we
+                # snapshot the directory contents but before we read the file.
+                continue
             oldest_enqueued_at = oldest_task.enqueued_at or oldest_task.receipt_at or None
             if oldest_enqueued_at:
                 try:
@@ -175,6 +180,7 @@ class ReceiptQueue:
                     oldest_dt = None
                 if oldest_dt is not None:
                     oldest_pending_age_seconds = max(0.0, (_utc_now() - oldest_dt.astimezone(timezone.utc)).total_seconds())
+            break
         return {
             "pending_count": len(pending_paths),
             "processing_count": len(list(self.processing_dir.glob("*.json"))),
