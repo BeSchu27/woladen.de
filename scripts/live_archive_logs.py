@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -49,13 +50,62 @@ def main() -> None:
     args = parse_args()
     if args.env_file is not None:
         load_env_file(args.env_file, allowed_keys=ARCHIVE_ENV_FILE_KEYS)
+    if not sys.stdout.isatty():
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     archiver = DailyResponseArchiver(AppConfig())
-    result = archiver.archive_date(
-        args.target_date,
-        upload=not args.local_only,
-        delete_source_on_success=(not args.keep_source and not args.local_only),
-    )
+    effective_target_date = args.target_date or archiver.default_target_date()
+    cleanup_after_upload = not args.keep_source and not args.local_only
+    upload = not args.local_only
+
+    pending_results = archiver.retry_pending_archives(
+        before_date=effective_target_date,
+        delete_source_on_success=False,
+        delete_archive_on_success=False,
+    ) if upload else []
+
+    current_result: dict[str, object]
+    exit_code = 0
+    try:
+        current_result = archiver.archive_date(
+            effective_target_date,
+            upload=upload,
+            delete_source_on_success=False,
+            delete_archive_on_success=False,
+        )
+    except Exception as exc:
+        current_result = {
+            "result": "failed",
+            "target_date": effective_target_date.isoformat(),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        exit_code = 1
+
+    cleanup_results: list[dict[str, object]] = []
+    cleanup_error: dict[str, object] | None = None
+    if upload and cleanup_after_upload:
+        try:
+            cleanup_results = archiver.cleanup_uploaded_artifacts(cutoff_date=effective_target_date)
+        except Exception as exc:
+            cleanup_error = {
+                "result": "failed",
+                "cutoff_date": effective_target_date.isoformat(),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            exit_code = 1
+
+    if any(item.get("result") == "failed" for item in pending_results):
+        exit_code = 1
+
+    result = {
+        "target_date": effective_target_date.isoformat(),
+        "pending_uploads": pending_results,
+        "current": current_result,
+        "cleanup": cleanup_results,
+    }
+    if cleanup_error is not None:
+        result["cleanup_error"] = cleanup_error
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

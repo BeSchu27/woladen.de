@@ -268,8 +268,10 @@ prune_releases() {
 ensure_state_dir_ownership() {
   local path
 
-  # SQLite sidecar files can appear and disappear while the live services are
-  # active, so treat ENOENT during the ownership pass as a harmless race.
+  # Only fix the state root and its direct children. Walking every archived raw
+  # payload file turns deploys into an O(number of payloads) operation and can
+  # leave an expensive recursive find running for ages on a busy host.
+  chown "$APP_USER:$APP_GROUP" "$STATE_DIR"
   while IFS= read -r -d '' path; do
     if chown "$APP_USER:$APP_GROUP" "$path" 2>/dev/null; then
       continue
@@ -278,7 +280,7 @@ ensure_state_dir_ownership() {
       continue
     fi
     chown "$APP_USER:$APP_GROUP" "$path"
-  done < <(find "$STATE_DIR" -ignore_readdir_race -print0)
+  done < <(find "$STATE_DIR" -mindepth 1 -maxdepth 1 -ignore_readdir_race -print0)
 }
 
 if ! getent group "$APP_GROUP" >/dev/null 2>&1; then

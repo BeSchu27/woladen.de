@@ -2334,11 +2334,15 @@ def test_daily_response_archiver_creates_tgz_uploads_and_cleans_up_sources(app_c
         def __init__(self):
             self.calls: list[dict] = []
             self.archive_names: list[str] = []
+            self.manifest: dict[str, object] = {}
 
         def upload_file(self, **kwargs):
             self.calls.append(kwargs)
             with tarfile.open(kwargs["path_or_fileobj"], "r:gz") as archive_handle:
                 self.archive_names = sorted(archive_handle.getnames())
+                manifest_file = archive_handle.extractfile("manifest.json")
+                assert manifest_file is not None
+                self.manifest = json.loads(manifest_file.read().decode("utf-8"))
 
     stub_api = StubHfApi()
     configured = replace(
@@ -2358,6 +2362,10 @@ def test_daily_response_archiver_creates_tgz_uploads_and_cleans_up_sources(app_c
     assert "manifest.json" in stub_api.archive_names
     assert "qwello/2026-04-14/20260414T000000000000Z-200-aaaa.json" in stub_api.archive_names
     assert "wirelane/2026-04-14/20260414T010000000000Z-200-bbbb.json" in stub_api.archive_names
+    assert stub_api.manifest["file_count"] == 2
+    assert stub_api.manifest["provider_count"] == 2
+    assert stub_api.manifest["providers"] == ["qwello", "wirelane"]
+    assert "source_files" not in stub_api.manifest
 
     archive_path = Path(result["archive_path"])
     assert not archive_path.exists()
@@ -2381,6 +2389,294 @@ def test_daily_response_archiver_local_only_keeps_tgz(app_config):
     archive_path = Path(result["archive_path"])
     assert archive_path.exists()
     assert not provider_dir.exists()
+
+
+def test_daily_response_archiver_retries_pending_archives_before_current_date(app_config):
+    previous_date = date(2026, 4, 13)
+    current_date = date(2026, 4, 14)
+    previous_dir = app_config.raw_payload_dir / "qwello" / previous_date.isoformat()
+    current_dir = app_config.raw_payload_dir / "wirelane" / current_date.isoformat()
+    previous_dir.mkdir(parents=True, exist_ok=True)
+    current_dir.mkdir(parents=True, exist_ok=True)
+    (previous_dir / "20260413T000000000000Z-200-aaaa.json").write_text(
+        json.dumps({"provider_uid": "qwello", "body_text": "first"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (current_dir / "20260414T000000000000Z-200-bbbb.json").write_text(
+        json.dumps({"provider_uid": "wirelane", "body_text": "second"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    token_file = app_config.archive_dir / "huggingface.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("secret-token\n", encoding="utf-8")
+
+    class StubHfApi:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def upload_file(self, **kwargs):
+            self.calls.append(kwargs)
+
+    stub_api = StubHfApi()
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_token_file=token_file,
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    archiver = DailyResponseArchiver(configured, hf_api=stub_api)
+
+    pending_result = archiver.archive_date(previous_date, upload=False, delete_source_on_success=False)
+    assert Path(pending_result["archive_path"]).exists()
+    assert previous_dir.exists()
+
+    retry_results = archiver.retry_pending_archives(before_date=current_date)
+    current_result = archiver.archive_date(current_date)
+
+    assert retry_results == [
+        {
+            "result": "uploaded",
+            "target_date": "2026-04-13",
+            "file_count": 1,
+            "provider_count": 1,
+            "archive_path": str(configured.archive_dir / "live-provider-responses-2026-04-13.tgz"),
+            "remote_path": "provider-response-archives/2026/04/live-provider-responses-2026-04-13.tgz",
+        }
+    ]
+    assert current_result["result"] == "uploaded"
+    assert current_result["remote_path"] == "provider-response-archives/2026/04/live-provider-responses-2026-04-14.tgz"
+    assert [call["path_in_repo"] for call in stub_api.calls] == [
+        "provider-response-archives/2026/04/live-provider-responses-2026-04-13.tgz",
+        "provider-response-archives/2026/04/live-provider-responses-2026-04-14.tgz",
+    ]
+    assert not previous_dir.exists()
+    assert not current_dir.exists()
+    assert not (configured.archive_dir / "live-provider-responses-2026-04-13.tgz").exists()
+    assert not (configured.archive_dir / "live-provider-responses-2026-04-14.tgz").exists()
+
+
+def test_daily_response_archiver_rebuilds_invalid_pending_archive_before_upload(app_config):
+    target_date = date(2026, 4, 14)
+    provider_dir = app_config.raw_payload_dir / "qwello" / target_date.isoformat()
+    provider_dir.mkdir(parents=True, exist_ok=True)
+    source_file = provider_dir / "20260414T000000000000Z-200-aaaa.json"
+    source_file.write_text(
+        json.dumps({"provider_uid": "qwello", "body_text": "first"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    token_file = app_config.archive_dir / "huggingface.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("secret-token\n", encoding="utf-8")
+
+    class StubHfApi:
+        def __init__(self):
+            self.archive_names: list[str] = []
+
+        def upload_file(self, **kwargs):
+            with tarfile.open(kwargs["path_or_fileobj"], "r:gz") as archive_handle:
+                self.archive_names = sorted(archive_handle.getnames())
+
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_token_file=token_file,
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    archive_path = configured.archive_dir / "live-provider-responses-2026-04-14.tgz"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_path.write_bytes(b"not-a-valid-tgz")
+
+    stub_api = StubHfApi()
+    archiver = DailyResponseArchiver(configured, hf_api=stub_api)
+    retry_results = archiver.retry_pending_archives(before_date=date(2026, 4, 15))
+
+    assert retry_results == [
+        {
+            "result": "uploaded",
+            "target_date": "2026-04-14",
+            "file_count": 1,
+            "provider_count": 1,
+            "archive_path": str(archive_path),
+            "remote_path": "provider-response-archives/2026/04/live-provider-responses-2026-04-14.tgz",
+        }
+    ]
+    assert "manifest.json" in stub_api.archive_names
+    assert "qwello/2026-04-14/20260414T000000000000Z-200-aaaa.json" in stub_api.archive_names
+    assert not archive_path.exists()
+    assert not provider_dir.exists()
+
+
+def test_daily_response_archiver_retries_raw_only_backlog_before_current_date(app_config):
+    backlog_date = date(2026, 4, 13)
+    current_date = date(2026, 4, 14)
+    backlog_dir = app_config.raw_payload_dir / "qwello" / backlog_date.isoformat()
+    current_dir = app_config.raw_payload_dir / "wirelane" / current_date.isoformat()
+    backlog_dir.mkdir(parents=True, exist_ok=True)
+    current_dir.mkdir(parents=True, exist_ok=True)
+    (backlog_dir / "20260413T000000000000Z-200-aaaa.json").write_text(
+        json.dumps({"provider_uid": "qwello", "body_text": "first"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (current_dir / "20260414T000000000000Z-200-bbbb.json").write_text(
+        json.dumps({"provider_uid": "wirelane", "body_text": "second"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    token_file = app_config.archive_dir / "huggingface.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("secret-token\n", encoding="utf-8")
+
+    class StubHfApi:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def list_repo_files(self, **kwargs):
+            return []
+
+        def upload_file(self, **kwargs):
+            self.calls.append(kwargs)
+
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_token_file=token_file,
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    archiver = DailyResponseArchiver(configured, hf_api=StubHfApi())
+    retry_results = archiver.retry_pending_archives(
+        before_date=current_date,
+        delete_source_on_success=False,
+        delete_archive_on_success=False,
+    )
+
+    assert retry_results == [
+        {
+            "result": "uploaded",
+            "target_date": "2026-04-13",
+            "file_count": 1,
+            "provider_count": 1,
+            "archive_path": str(configured.archive_dir / "live-provider-responses-2026-04-13.tgz"),
+            "remote_path": "provider-response-archives/2026/04/live-provider-responses-2026-04-13.tgz",
+        }
+    ]
+    assert backlog_dir.exists()
+    assert current_dir.exists()
+    assert (configured.archive_dir / "live-provider-responses-2026-04-13.tgz").exists()
+
+
+def test_daily_response_archiver_skips_reupload_for_dates_already_on_hf(app_config):
+    target_date = date(2026, 4, 13)
+    provider_dir = app_config.raw_payload_dir / "qwello" / target_date.isoformat()
+    provider_dir.mkdir(parents=True, exist_ok=True)
+    (provider_dir / "20260413T000000000000Z-200-aaaa.json").write_text(
+        json.dumps({"provider_uid": "qwello", "body_text": "first"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    token_file = app_config.archive_dir / "huggingface.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("secret-token\n", encoding="utf-8")
+
+    class StubHfApi:
+        def __init__(self):
+            self.upload_calls: list[dict] = []
+
+        def list_repo_files(self, **kwargs):
+            return [
+                "provider-response-archives/2026/04/live-provider-responses-2026-04-13.tgz",
+            ]
+
+        def upload_file(self, **kwargs):
+            self.upload_calls.append(kwargs)
+
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_token_file=token_file,
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    stub_api = StubHfApi()
+    retry_results = DailyResponseArchiver(configured, hf_api=stub_api).retry_pending_archives(
+        before_date=date(2026, 4, 14),
+        delete_source_on_success=False,
+        delete_archive_on_success=False,
+    )
+
+    assert retry_results == [
+        {
+            "result": "already_uploaded",
+            "target_date": "2026-04-13",
+            "archive_path": str(configured.archive_dir / "live-provider-responses-2026-04-13.tgz"),
+            "remote_path": "provider-response-archives/2026/04/live-provider-responses-2026-04-13.tgz",
+        }
+    ]
+    assert stub_api.upload_calls == []
+    assert provider_dir.exists()
+
+
+def test_daily_response_archiver_cleanup_removes_only_remote_confirmed_local_artifacts(app_config):
+    uploaded_date = date(2026, 4, 13)
+    skipped_date = date(2026, 4, 14)
+    future_date = date(2026, 4, 15)
+    uploaded_dir = app_config.raw_payload_dir / "qwello" / uploaded_date.isoformat()
+    skipped_dir = app_config.raw_payload_dir / "wirelane" / skipped_date.isoformat()
+    future_dir = app_config.raw_payload_dir / "ampeco" / future_date.isoformat()
+    uploaded_dir.mkdir(parents=True, exist_ok=True)
+    skipped_dir.mkdir(parents=True, exist_ok=True)
+    future_dir.mkdir(parents=True, exist_ok=True)
+    (uploaded_dir / "20260413T000000000000Z-200-aaaa.json").write_text("{}", encoding="utf-8")
+    (skipped_dir / "20260414T000000000000Z-200-bbbb.json").write_text("{}", encoding="utf-8")
+    (future_dir / "20260415T000000000000Z-200-cccc.json").write_text("{}", encoding="utf-8")
+
+    token_file = app_config.archive_dir / "huggingface.token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("secret-token\n", encoding="utf-8")
+
+    class StubHfApi:
+        def list_repo_files(self, **kwargs):
+            return [
+                "provider-response-archives/2026/04/live-provider-responses-2026-04-13.tgz",
+                "provider-response-archives/2026/04/live-provider-responses-2026-04-15.tgz",
+            ]
+
+    configured = replace(
+        app_config,
+        hf_archive_repo_id="raphaelvolz/woladen-live-archives",
+        hf_archive_token_file=token_file,
+        hf_archive_path_prefix="provider-response-archives",
+    )
+    uploaded_archive = configured.archive_dir / "live-provider-responses-2026-04-13.tgz"
+    skipped_archive = configured.archive_dir / "live-provider-responses-2026-04-14.tgz"
+    future_archive = configured.archive_dir / "live-provider-responses-2026-04-15.tgz"
+    uploaded_archive.parent.mkdir(parents=True, exist_ok=True)
+    uploaded_archive.write_bytes(b"uploaded")
+    skipped_archive.write_bytes(b"skipped")
+    future_archive.write_bytes(b"future")
+    (configured.archive_dir / "live-provider-responses-2026-04-13.tgz.tmp").write_bytes(b"temp")
+
+    cleanup_results = DailyResponseArchiver(configured, hf_api=StubHfApi()).cleanup_uploaded_artifacts(
+        cutoff_date=skipped_date
+    )
+
+    assert cleanup_results == [
+        {
+            "target_date": "2026-04-13",
+            "remote_path": "provider-response-archives/2026/04/live-provider-responses-2026-04-13.tgz",
+            "removed_raw_file_count": 1,
+            "removed_day_dir_count": 1,
+            "removed_provider_dir_count": 1,
+            "removed_local_archive": True,
+            "removed_temp_archive": True,
+        }
+    ]
+    assert not uploaded_dir.exists()
+    assert skipped_dir.exists()
+    assert future_dir.exists()
+    assert not uploaded_archive.exists()
+    assert skipped_archive.exists()
+    assert future_archive.exists()
 
 
 def test_daily_response_archive_downloader_fetches_expected_remote_tgz(app_config):
