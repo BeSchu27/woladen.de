@@ -24,6 +24,7 @@ import {
 
 /* --- CONFIGURATION & CONSTANTS --- */
 const MAX_DISPLAY_POWER_KW = 400;
+const LIST_VIEW_MAX_STATIONS = 20;
 const LIVE_SUMMARY_REFRESH_MS = 15000;
 const LIVE_API_TIMEOUT_MS = 3500;
 const LIVE_DETAIL_TIMEOUT_MS = 4000;
@@ -1251,8 +1252,8 @@ function renderList() {
     return;
   }
 
-  // Limit to first 50 items for performance
-  const displayItems = state.filtered.slice(0, 50);
+  // Keep the web list aligned with the native apps.
+  const displayItems = state.filtered.slice(0, LIST_VIEW_MAX_STATIONS);
 
   if (displayItems.length === 0) {
     container.innerHTML = `<div class="empty-state">Keine Ladestationen gefunden.</div>`;
@@ -1265,12 +1266,12 @@ function renderList() {
   });
   requestLiveSummariesForFeatures(displayItems);
 
-  if (state.filtered.length > 50) {
+  if (state.filtered.length > LIST_VIEW_MAX_STATIONS) {
     const more = document.createElement("div");
     more.style.textAlign = "center";
     more.style.padding = "1rem";
     more.style.color = "#888";
-    more.textContent = `...und ${state.filtered.length - 50} weitere`;
+    more.textContent = `...und ${state.filtered.length - LIST_VIEW_MAX_STATIONS} weitere`;
     container.appendChild(more);
   }
 }

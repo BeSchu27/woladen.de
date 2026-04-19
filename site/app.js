@@ -24,6 +24,7 @@ import {
 
 /* --- CONFIGURATION & CONSTANTS --- */
 const MAX_DISPLAY_POWER_KW = 400;
+const LIST_VIEW_MAX_STATIONS = 20;
 const LIVE_SUMMARY_REFRESH_MS = 15000;
 const LIVE_API_TIMEOUT_MS = 3500;
 const LIVE_DETAIL_TIMEOUT_MS = 4000;
@@ -657,13 +658,17 @@ const els = {
   meta: document.getElementById("app-meta"),
 };
 
+const VIEW_IDS = new Set(["view-list", "view-map", "view-favorites", "view-info"]);
+
 /* --- INITIALIZATION --- */
 async function init() {
   loadFavorites();
   initMap();
   initNavigation();
+  syncViewWithRequestedHash();
   initFilters();
   window.addEventListener("popstate", syncDetailModalWithUrl);
+  window.addEventListener("hashchange", syncViewWithRequestedHash);
 
   // Event Listeners
   els.buttons.locate.addEventListener("click", () => requestUserLocation(false));
@@ -1072,17 +1077,40 @@ function updateUserMarker() {
 function initNavigation() {
   els.navItems.forEach((btn) => {
     btn.addEventListener("click", () => {
-      // Switch active state
-      els.navItems.forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-
       const targetId = btn.dataset.target;
       switchView(targetId);
     });
   });
 }
 
-function switchView(viewId) {
+function setActiveNavItem(viewId) {
+  els.navItems.forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.target === viewId);
+  });
+}
+
+function getRequestedViewIdFromHash() {
+  const hash = String(window.location.hash || "").replace(/^#/, "").trim();
+  return VIEW_IDS.has(hash) ? hash : "view-list";
+}
+
+function updateRequestedViewHash(viewId) {
+  const url = new URL(window.location.href);
+  url.hash = viewId && viewId !== "view-list" ? viewId : "";
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", next);
+}
+
+function syncViewWithRequestedHash() {
+  const viewId = getRequestedViewIdFromHash();
+  switchView(viewId, { syncHash: false });
+}
+
+function switchView(viewId, options = {}) {
+  const { syncHash = true } = options;
+  if (!VIEW_IDS.has(viewId)) {
+    return;
+  }
   // Hide all views
   Object.values(els.views).forEach((el) => {
     el.classList.remove("active");
@@ -1098,6 +1126,10 @@ function switchView(viewId) {
     // Force reflow
     void target.offsetWidth;
     target.classList.add("active");
+  }
+  setActiveNavItem(viewId);
+  if (syncHash) {
+    updateRequestedViewHash(viewId);
   }
 
   // Refresh lists if needed
@@ -1220,8 +1252,8 @@ function renderList() {
     return;
   }
 
-  // Limit to first 50 items for performance
-  const displayItems = state.filtered.slice(0, 50);
+  // Keep the web list aligned with the native apps.
+  const displayItems = state.filtered.slice(0, LIST_VIEW_MAX_STATIONS);
 
   if (displayItems.length === 0) {
     container.innerHTML = `<div class="empty-state">Keine Ladestationen gefunden.</div>`;
@@ -1234,12 +1266,12 @@ function renderList() {
   });
   requestLiveSummariesForFeatures(displayItems);
 
-  if (state.filtered.length > 50) {
+  if (state.filtered.length > LIST_VIEW_MAX_STATIONS) {
     const more = document.createElement("div");
     more.style.textAlign = "center";
     more.style.padding = "1rem";
     more.style.color = "#888";
-    more.textContent = `...und ${state.filtered.length - 50} weitere`;
+    more.textContent = `...und ${state.filtered.length - LIST_VIEW_MAX_STATIONS} weitere`;
     container.appendChild(more);
   }
 }

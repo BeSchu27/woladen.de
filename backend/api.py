@@ -39,10 +39,11 @@ PUBLICATION_LOOKUP_KEYS = (
 )
 PROFILE_FLAG_VALUES = {"1", "true", "yes", "on"}
 PROFILE_HEADER_NAMES = ("Server-Timing", "Timing-Allow-Origin", "Content-Length")
+MAX_STATION_LOOKUP_IDS = 20
 
 
 class StationLookupRequest(BaseModel):
-    station_ids: list[str] = Field(default_factory=list, max_length=200)
+    station_ids: list[str] = Field(default_factory=list, max_length=MAX_STATION_LOOKUP_IDS)
 
 
 def _strip_fields(payload: dict, excluded_fields: set[str]) -> dict:
