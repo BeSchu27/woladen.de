@@ -170,6 +170,24 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
             access_mode="noauth",
         ),
         SubscriptionOffer(
+            provider_uid="volkswagencharginggroup",
+            display_name="Volkswagen Group Charging",
+            publisher="Volkswagen Group Charging",
+            publication_id="976223649023320064",
+            offer_title="AFIR-recharging-dyn-VolkswagenChargingGroup",
+            feed_kind="dynamic",
+            access_mode="auth",
+        ),
+        SubscriptionOffer(
+            provider_uid="volkswagencharginggroup",
+            display_name="Volkswagen Group Charging",
+            publisher="Volkswagen Group Charging",
+            publication_id="976221024898781184",
+            offer_title="AFIR-recharging-stat-VolkswagenChargingGroup",
+            feed_kind="static",
+            access_mode="auth",
+        ),
+        SubscriptionOffer(
             provider_uid="pump",
             display_name="PUMP",
             publisher="800 Volt Technologies GmbH",
@@ -192,6 +210,8 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
             {"id": "980986244745637888", "dataOfferId": "970305056590979072", "contractStatus": "ACTIVE"},
             {"id": "980986356418981888", "dataOfferId": "953843379766972416", "contractStatus": "ACTIVE"},
             {"id": "980986370583146496", "dataOfferId": "953828817873125376", "contractStatus": "ACTIVE"},
+            {"id": "980986122297135104", "dataOfferId": "976223649023320064", "contractStatus": "ACTIVE"},
+            {"id": "980986109064261632", "dataOfferId": "976221024898781184", "contractStatus": "ACTIVE"},
             {"id": "980986256821039104", "dataOfferId": "969322788846231552", "contractStatus": "ACTIVE"},
         ],
     )
@@ -229,6 +249,13 @@ def test_build_live_subscription_registry_pairs_dyn_and_stat_and_preserves_noaut
     assert "enabled" not in registry["tesla"]
     assert registry["tesla"]["delivery_mode"] == "push_with_poll_fallback"
     assert registry["tesla"]["push_fallback_after_seconds"] == 300
+
+    assert registry["volkswagencharginggroup"]["subscription_id"] == "980986122297135104"
+    assert registry["volkswagencharginggroup"]["static_subscription_id"] == "980986109064261632"
+    assert registry["volkswagencharginggroup"]["fetch_kind"] == "mtls_subscription"
+    assert registry["volkswagencharginggroup"]["enabled"] is True
+    assert registry["volkswagencharginggroup"]["delivery_mode"] == "push_with_poll_fallback"
+    assert registry["volkswagencharginggroup"]["push_fallback_after_seconds"] == 300
 
     assert "subscription_id" not in registry["pump"]
     assert registry["pump"]["static_subscription_id"] == "980986256821039104"

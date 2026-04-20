@@ -27,6 +27,7 @@ from backend.loaders import load_evse_matches, load_provider_targets, load_site_
 from backend.models import FetchResponse
 from backend.receipt_queue import ReceiptQueue
 from backend.service import IngestionService
+from backend.status import load_bundle_station_summary
 from backend.store import LiveStore, utc_now_iso
 from backend.subscriptions import (
     SubscriptionOffer,
@@ -244,6 +245,19 @@ def _write_active_subscription_provider_fixture(path: Path) -> None:
                         "access_mode": "auth",
                         "data_model": "https://w3id.org/mdp/schema/data_model#DATEX_2_V3",
                         "title": "AFIR-recharging-dyn-Wirelane",
+                    }
+                },
+            },
+            {
+                "uid": "volkswagencharginggroup",
+                "display_name": "Volkswagen Group Charging",
+                "publisher": "Volkswagen Group Charging",
+                "feeds": {
+                    "dynamic": {
+                        "publication_id": "976223649023320064",
+                        "access_mode": "auth",
+                        "data_model": "https://w3id.org/mdp/schema/data_model#DATEX_2_V3",
+                        "title": "AFIR-recharging-dyn-VolkswagenChargingGroup",
                     }
                 },
             },
@@ -740,6 +754,7 @@ def test_load_active_dyn_datex_subscription_offers_filters_to_auth_datex_docs_su
     assert [(offer.provider_uid, offer.publication_id) for offer in offers] == [
         ("elu_mobility", "971513500454850560"),
         ("m8mit", "970388804493828096"),
+        ("volkswagencharginggroup", "976223649023320064"),
         ("wirelane", "876587237907525632"),
     ]
 
@@ -1885,6 +1900,31 @@ def test_api_allows_local_cors_origins(app_config):
         assert response.headers["access-control-allow-origin"] == origin
 
 
+def test_load_bundle_station_summary_handles_minified_geojson_without_full_parse(tmp_path):
+    geojson_path = tmp_path / "bundle.geojson"
+    geojson_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {"type": "Feature", "properties": {"station_id": "station-1"}},
+                    {"type": "Feature", "properties": {"station_id": "station-2"}},
+                    {"type": "Feature", "properties": {"station_id": "station-1"}},
+                ],
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+    summary = load_bundle_station_summary(geojson_path)
+
+    assert summary["feature_count"] == 3
+    assert summary["station_ids"] == {"station-1", "station-2"}
+    assert summary["unique_station_count"] == 2
+    assert summary["duplicate_station_id_count"] == 1
+
+
 def test_api_allows_configured_cors_origins(app_config):
     _write_provider_fixture(app_config.provider_config_path)
     _write_matches_fixture(app_config.site_match_path)
@@ -1902,7 +1942,7 @@ def test_api_allows_configured_cors_origins(app_config):
     assert response.headers["access-control-allow-origin"] == "https://woladen.de"
 
 
-def test_api_status_reports_bundle_coverage_and_provider_timestamps(app_config):
+def test_api_status_endpoint_is_disabled(app_config):
     payload = json.dumps(
         _dynamic_payload_with_energy_rate_update(
             next_slots=[
@@ -1926,70 +1966,12 @@ def test_api_status_reports_bundle_coverage_and_provider_timestamps(app_config):
 
     client = TestClient(create_app(app_config))
     response = client.get("/status")
-    assert response.status_code == 200
-
-    status_payload = response.json()
-    assert status_payload["station_count"] == 1
-    assert status_payload["bundle_station_count"] == 2
-    assert status_payload["stations_with_any_live_observation"] == 1
-    assert status_payload["stations_with_current_live_state"] == 1
-    assert status_payload["coverage_ratio"] == 1.0
-    assert status_payload["bundle_stations_with_any_live_observation"] == 1
-    assert status_payload["bundle_stations_with_current_live_state"] == 1
-    assert status_payload["bundle_coverage_ratio"] == 0.5
-    assert status_payload["stations_with_any_live_observation_outside_bundle"] == 0
-    assert status_payload["observed_station_ids_not_in_full_registry"] == 0
-    assert status_payload["last_received_update_at"] == result["fetched_at"]
-    assert status_payload["latest_updated_station_id"] == "station-1"
-    assert status_payload["providers_with_any_live_observation"] == 1
-    assert status_payload["providers_with_any_live_observation_in_bundle"] == 1
-
-    providers = {item["provider_uid"]: item for item in status_payload["providers"]}
-    assert providers["qwello"]["stations_with_any_live_observation"] == 1
-    assert providers["qwello"]["stations_with_any_live_observation_in_bundle"] == 1
-    assert providers["qwello"]["coverage_ratio"] == 1.0
-    assert providers["qwello"]["bundle_coverage_ratio"] == 0.5
-    assert providers["qwello"]["last_received_update_at"] == result["fetched_at"]
-    assert providers["qwello"]["last_source_update_at"] == "2026-04-15T08:00:00+00:00"
-    assert providers["qwello"]["latest_updated_station_id"] == "station-1"
-    assert providers["qwello"]["latest_attribute_updates"]["availability_status"]["station_id"] == "station-1"
-    assert providers["qwello"]["latest_attribute_updates"]["availability_status"]["value"] == "free"
-    assert providers["qwello"]["latest_attribute_updates"]["price_display"]["value"] == "0,59 €/kWh"
-    assert providers["qwello"]["latest_attribute_updates"]["price_energy_eur_kwh_min"]["value"] == "0.59"
-    assert providers["qwello"]["latest_attribute_updates"]["next_available_charging_slots"]["value"] == [
-        {
-            "expectedAvailableFromTime": "2026-04-15T09:15:00+00:00",
-            "expectedAvailableUntilTime": "2026-04-15T09:45:00+00:00",
-        }
-    ]
-    assert providers["qwello"]["latest_attribute_updates"]["supplemental_facility_status"]["value"] == [
-        "parkingRestricted"
-    ]
-    assert providers["qwello"]["last_polled_at"] == result["fetched_at"]
-    assert providers["qwello"]["last_result"] == "ok"
-    assert providers["qwello"]["recent_updates"][0]["update_kind"] == "poll"
-    assert providers["qwello"]["recent_updates"][0]["observation_count"] == 1
-    assert providers["qwello"]["recent_updates"][0]["mapped_observation_count"] == 1
-    assert providers["qwello"]["recent_updates"][0]["dropped_observation_count"] == 0
-    assert providers["qwello"]["recent_updates"][0]["changed_observation_count"] == 1
-    assert providers["qwello"]["recent_updates"][0]["changed_mapped_observation_count"] == 1
-    assert providers["qwello"]["recent_updates"][0]["changed_dropped_observation_count"] == 0
-    assert providers["ampeco"]["stations_with_any_live_observation"] == 0
-    assert providers["ampeco"]["last_received_update_at"] is None
-    assert providers["ampeco"]["latest_updated_station_id"] is None
-    assert providers["ampeco"]["latest_attribute_updates"] == {}
-    assert providers["ampeco"]["recent_updates"][0]["update_kind"] == "push"
-    assert providers["ampeco"]["recent_updates"][0]["received_at"] == dropped_result["received_at"]
-    assert providers["ampeco"]["recent_updates"][0]["observation_count"] == 2
-    assert providers["ampeco"]["recent_updates"][0]["mapped_observation_count"] == 0
-    assert providers["ampeco"]["recent_updates"][0]["dropped_observation_count"] == 2
-    assert providers["ampeco"]["recent_updates"][0]["changed_observation_count"] == 2
-    assert providers["ampeco"]["recent_updates"][0]["changed_mapped_observation_count"] == 0
-    assert providers["ampeco"]["recent_updates"][0]["changed_dropped_observation_count"] == 2
+    assert response.status_code == 404
+    assert response.json()["detail"] == "status_endpoint_disabled"
 
     versioned_response = client.get("/v1/status")
-    assert versioned_response.status_code == 200
-    assert versioned_response.json()["stations_with_any_live_observation"] == 1
+    assert versioned_response.status_code == 404
+    assert versioned_response.json()["detail"] == "status_endpoint_disabled"
 
 
 def test_push_ingestion_persists_observations_from_provider_path(app_config):

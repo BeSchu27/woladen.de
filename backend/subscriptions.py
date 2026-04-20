@@ -18,6 +18,7 @@ ACTIVE_DYN_DATEX_SUBSCRIPTION_PROVIDER_UIDS = (
     "ladenetz_de_ladestationsdaten",
     "m8mit",
     "vaylens",
+    "volkswagencharginggroup",
     "wirelane",
 )
 # eliso uses the same authenticated Mobilithek subscription flow, but publishes a
@@ -39,6 +40,7 @@ LIVE_PUSH_FALLBACK_PROVIDER_UIDS = frozenset(
         "smatrics",
         "tesla",
         "vaylens",
+        "volkswagencharginggroup",
         "wirelane",
     }
 )

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -23,29 +25,65 @@ LATEST_ATTRIBUTE_FIELDS = (
     "supplemental_facility_status",
 )
 
+_FEATURE_RE = re.compile(r'"type"\s*:\s*"Feature"')
+_STATION_ID_RE = re.compile(r'"station_id"\s*:\s*"((?:\\.|[^"\\])*)"')
+_GEOJSON_SCAN_CHUNK_SIZE = 1024 * 1024
+_GEOJSON_SCAN_CARRY_SIZE = 512
 
-def load_bundle_station_summary(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    features = payload.get("features")
-    if not isinstance(features, list):
-        raise ValueError(f"{path} does not contain a GeoJSON feature list")
 
+def _scan_bundle_geojson(path: Path) -> dict[str, Any]:
+    feature_count = 0
     station_ids: set[str] = set()
-    for feature in features:
-        if not isinstance(feature, dict):
-            continue
-        properties = feature.get("properties")
-        if not isinstance(properties, dict):
-            continue
-        station_id = str(properties.get("station_id") or "").strip()
-        if station_id:
-            station_ids.add(station_id)
+    carry = ""
+
+    with path.open("r", encoding="utf-8") as handle:
+        while True:
+            chunk = handle.read(_GEOJSON_SCAN_CHUNK_SIZE)
+            if not chunk:
+                break
+
+            text = carry + chunk
+            if len(text) <= _GEOJSON_SCAN_CARRY_SIZE:
+                carry = text
+                continue
+
+            scan_text = text[:-_GEOJSON_SCAN_CARRY_SIZE]
+            feature_count += sum(1 for _ in _FEATURE_RE.finditer(scan_text))
+            for match in _STATION_ID_RE.finditer(scan_text):
+                station_id = str(json.loads(f'"{match.group(1)}"') or "").strip()
+                if station_id:
+                    station_ids.add(station_id)
+            carry = text[-_GEOJSON_SCAN_CARRY_SIZE:]
+
+    if carry:
+        feature_count += sum(1 for _ in _FEATURE_RE.finditer(carry))
+        for match in _STATION_ID_RE.finditer(carry):
+            station_id = str(json.loads(f'"{match.group(1)}"') or "").strip()
+            if station_id:
+                station_ids.add(station_id)
 
     return {
-        "feature_count": len(features),
-        "station_ids": station_ids,
+        "feature_count": feature_count,
+        "station_ids": frozenset(station_ids),
         "unique_station_count": len(station_ids),
-        "duplicate_station_id_count": len(features) - len(station_ids),
+        "duplicate_station_id_count": feature_count - len(station_ids),
+    }
+
+
+@lru_cache(maxsize=4)
+def _cached_bundle_station_summary(path_text: str, mtime_ns: int, size_bytes: int) -> dict[str, Any]:
+    del mtime_ns, size_bytes
+    return _scan_bundle_geojson(Path(path_text))
+
+
+def load_bundle_station_summary(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    cached = _cached_bundle_station_summary(str(path), stat.st_mtime_ns, stat.st_size)
+    return {
+        "feature_count": int(cached["feature_count"]),
+        "station_ids": set(cached["station_ids"]),
+        "unique_station_count": int(cached["unique_station_count"]),
+        "duplicate_station_id_count": int(cached["duplicate_station_id_count"]),
     }
 
 
