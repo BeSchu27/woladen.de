@@ -17,6 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from analysis.output_io import write_csv_atomic, write_text_atomic
+
 DEFAULT_ANALYSIS_OUTPUT_DIR = REPO_ROOT / "analysis" / "output"
 DEFAULT_REPORT_OUTPUT_DIR = DEFAULT_ANALYSIS_OUTPUT_DIR / "reports"
 
@@ -69,15 +71,6 @@ def _parse_archive_date(value: str) -> date:
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
-
-
-def _write_csv(path: Path, fieldnames: Sequence[str], rows: Sequence[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 
 def _float_value(value: Any) -> float:
@@ -287,7 +280,7 @@ def run_provider_mapping_gap_report(
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / f"provider_mapping_gaps_{target_date_text}.csv"
     md_path = output_dir / f"provider_mapping_gaps_{target_date_text}.md"
-    _write_csv(csv_path, PROVIDER_MAPPING_GAP_FIELDS, report_rows)
+    write_csv_atomic(csv_path, PROVIDER_MAPPING_GAP_FIELDS, report_rows)
 
     priority_counts = Counter(str(row.get("remediation_priority") or "low") for row in report_rows)
     category_groups: dict[str, list[dict[str, Any]]] = {}
@@ -356,7 +349,7 @@ def run_provider_mapping_gap_report(
             f"{row['extracted_unmapped_observation_count_total']} | {row['unique_unmapped_evse_id_count']} | "
             f"{row['unique_unmapped_site_id_count']} |"
         )
-    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_text_atomic(md_path, "\n".join(lines) + "\n")
 
     return {
         "archive_date": target_date_text,

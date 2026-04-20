@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from analysis.output_io import publish_staged_directory, staged_output_directory, write_csv
 from backend.config import AppConfig
 from backend.datex import decode_json_payload, extract_dynamic_facts, parse_iso_datetime
 from backend.loaders import load_evse_matches, load_provider_targets, load_site_matches, load_station_records
@@ -887,15 +888,6 @@ def build_provider_daily_summary(
     return summary_rows
 
 
-def _write_csv(path: Path, fieldnames: Sequence[str], rows: Sequence[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
-
-
 def run_analysis(
     *,
     archive_paths: Sequence[Path],
@@ -914,37 +906,46 @@ def run_analysis(
         station_daily_summary_path=output_dir / "station_daily_summary.csv",
         provider_daily_summary_path=output_dir / "provider_daily_summary.csv",
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv(outputs.provider_catalog_path, PROVIDER_CATALOG_FIELDS, provider_catalog_rows)
-
-    with outputs.archive_messages_path.open("w", encoding="utf-8", newline="") as archive_messages_handle, outputs.evse_observations_path.open(
-        "w", encoding="utf-8", newline=""
-    ) as evse_observations_handle, outputs.evse_status_changes_path.open("w", encoding="utf-8", newline="") as evse_status_changes_handle:
-        archive_messages_writer = csv.DictWriter(archive_messages_handle, fieldnames=ARCHIVE_MESSAGE_FIELDS)
-        evse_observations_writer = csv.DictWriter(evse_observations_handle, fieldnames=EVSE_OBSERVATION_FIELDS)
-        evse_status_changes_writer = csv.DictWriter(evse_status_changes_handle, fieldnames=EVSE_STATUS_CHANGE_FIELDS)
-        archive_messages_writer.writeheader()
-        evse_observations_writer.writeheader()
-        evse_status_changes_writer.writeheader()
-        streamed = stream_archive_history(
-            archive_paths,
-            config=effective_config,
-            message_writer=archive_messages_writer,
-            observation_writer=evse_observations_writer,
-            status_change_writer=evse_status_changes_writer,
+    with staged_output_directory(output_dir) as staged_dir:
+        staged_outputs = AnalysisOutputs(
+            provider_catalog_path=staged_dir / "provider_catalog.csv",
+            archive_messages_path=staged_dir / "archive_messages.csv",
+            evse_observations_path=staged_dir / "evse_observations.csv",
+            evse_status_changes_path=staged_dir / "evse_status_changes.csv",
+            station_daily_summary_path=staged_dir / "station_daily_summary.csv",
+            provider_daily_summary_path=staged_dir / "provider_daily_summary.csv",
         )
+        write_csv(staged_outputs.provider_catalog_path, PROVIDER_CATALOG_FIELDS, provider_catalog_rows)
 
-    station_daily_rows = build_station_daily_summary(streamed.latest_rows, station_catalog=station_catalog)
-    provider_daily_rows = build_provider_daily_summary(
-        streamed.archive_dates,
-        provider_catalog_rows,
-        streamed.message_rows,
-        streamed.latest_rows,
-        station_daily_rows,
-        bundle_station_ids=bundle_station_ids,
-    )
-    _write_csv(outputs.station_daily_summary_path, STATION_DAILY_SUMMARY_FIELDS, station_daily_rows)
-    _write_csv(outputs.provider_daily_summary_path, PROVIDER_DAILY_SUMMARY_FIELDS, provider_daily_rows)
+        with staged_outputs.archive_messages_path.open("w", encoding="utf-8", newline="") as archive_messages_handle, staged_outputs.evse_observations_path.open(
+            "w", encoding="utf-8", newline=""
+        ) as evse_observations_handle, staged_outputs.evse_status_changes_path.open("w", encoding="utf-8", newline="") as evse_status_changes_handle:
+            archive_messages_writer = csv.DictWriter(archive_messages_handle, fieldnames=ARCHIVE_MESSAGE_FIELDS)
+            evse_observations_writer = csv.DictWriter(evse_observations_handle, fieldnames=EVSE_OBSERVATION_FIELDS)
+            evse_status_changes_writer = csv.DictWriter(evse_status_changes_handle, fieldnames=EVSE_STATUS_CHANGE_FIELDS)
+            archive_messages_writer.writeheader()
+            evse_observations_writer.writeheader()
+            evse_status_changes_writer.writeheader()
+            streamed = stream_archive_history(
+                archive_paths,
+                config=effective_config,
+                message_writer=archive_messages_writer,
+                observation_writer=evse_observations_writer,
+                status_change_writer=evse_status_changes_writer,
+            )
+
+        station_daily_rows = build_station_daily_summary(streamed.latest_rows, station_catalog=station_catalog)
+        provider_daily_rows = build_provider_daily_summary(
+            streamed.archive_dates,
+            provider_catalog_rows,
+            streamed.message_rows,
+            streamed.latest_rows,
+            station_daily_rows,
+            bundle_station_ids=bundle_station_ids,
+        )
+        write_csv(staged_outputs.station_daily_summary_path, STATION_DAILY_SUMMARY_FIELDS, station_daily_rows)
+        write_csv(staged_outputs.provider_daily_summary_path, PROVIDER_DAILY_SUMMARY_FIELDS, provider_daily_rows)
+        publish_staged_directory(staged_dir, output_dir)
 
     return {
         "archive_count": len(archive_paths),

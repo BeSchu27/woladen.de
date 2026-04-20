@@ -8,11 +8,13 @@ import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from analysis.output_io import write_csv_atomic
 
 DEFAULT_ANALYSIS_OUTPUT_DIR = REPO_ROOT / "analysis" / "output"
 DEFAULT_INPUT_PATH = DEFAULT_ANALYSIS_OUTPUT_DIR / "evse_status_changes.csv"
@@ -24,15 +26,6 @@ OUTPUT_FIELDS = ["provider_evse_id", "station_id", "count"]
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
-
-
-def _write_csv(path: Path, fieldnames: Sequence[str], rows: Sequence[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 
 def _dominant_station_id(counter: Counter[str]) -> str:
@@ -70,7 +63,7 @@ def run_provider_evse_change_counts(
         for provider_evse_id, count in counts.items()
     ]
     output_rows.sort(key=lambda row: (-int(row["count"]), str(row["provider_evse_id"])))
-    _write_csv(output_path, OUTPUT_FIELDS, output_rows)
+    write_csv_atomic(output_path, OUTPUT_FIELDS, output_rows)
 
     top_row = output_rows[0] if output_rows else {"provider_evse_id": "", "station_id": "", "count": 0}
     return {
