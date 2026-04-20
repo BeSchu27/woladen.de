@@ -3,16 +3,18 @@
     "2026-04-16",
     "2026-04-17",
     "2026-04-18",
-    "2026-04-19"
+    "2026-04-19",
+    "2026-04-20"
   ],
-  "day_count": 4,
-  "generated_at": "2026-04-19T23:38:24+00:00",
-  "latest_date": "2026-04-19",
+  "day_count": 5,
+  "generated_at": "2026-04-20T23:47:11+00:00",
+  "latest_date": "2026-04-20",
   "snapshot_paths": {
     "2026-04-16": "days/2026/04/16/snapshot.json",
     "2026-04-17": "days/2026/04/17/snapshot.json",
     "2026-04-18": "days/2026/04/18/snapshot.json",
-    "2026-04-19": "days/2026/04/19/snapshot.json"
+    "2026-04-19": "days/2026/04/19/snapshot.json",
+    "2026-04-20": "days/2026/04/20/snapshot.json"
   },
   "trends_path": "trends.json"
 }
