@@ -1,17 +1,17 @@
 {
   "run": {
-    "started_at": "2026-04-20T01:37:35+00:00",
-    "finished_at": "2026-04-20T04:01:29+00:00"
+    "started_at": "2026-04-20T17:58:56+00:00",
+    "finished_at": "2026-04-20T19:30:32+00:00"
   },
   "source": {
     "source_url": "https://data.bundesnetzagentur.de/Bundesnetzagentur/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenregister_BNetzA_2026-03-25.csv",
-    "fetched_at": "2026-04-20T01:38:24.370298+00:00",
+    "fetched_at": "2026-04-20T17:59:39.530115+00:00",
     "bytes": 48836056,
     "content_type": "application/octet-stream",
     "bnetza_api_ladestation_source": {
       "source_url": "https://d1269bxe5ubfat.cloudfront.net/bnetza-api/data/bnetza_api_ladestation000.csv?v=1",
       "label": "bnetza_api_ladestation",
-      "fetched_at": "2026-04-20T01:38:31.778183+00:00",
+      "fetched_at": "2026-04-20T17:59:46.903046+00:00",
       "error": "403 Client Error: Forbidden for url: https://d1269bxe5ubfat.cloudfront.net/bnetza-api/data/bnetza_api_ladestation000.csv?v=1",
       "unavailable": true
     }
@@ -29,24 +29,25 @@
     "raw_rows": 108577,
     "full_registry_stations_total": 71652,
     "full_registry_active_stations_total": 71635,
-    "fast_chargers_total": 16347,
-    "stations_with_live_occupancy": 280,
-    "stations_with_static_details": 9778,
-    "stations_with_price": 3998,
-    "stations_with_opening_hours": 11593,
-    "stations_with_helpdesk": 5378,
+    "fast_chargers_total": 14967,
+    "stations_with_live_occupancy": 264,
+    "stations_with_static_details": 9197,
+    "stations_with_price": 4043,
+    "stations_with_opening_hours": 10757,
+    "stations_with_helpdesk": 5125,
     "stations_with_amenities": 14967
   },
   "occupancy_lookup": {
-    "sources_discovered": 22,
+    "sources_discovered": 23,
     "sources_used": 20,
-    "locations_scanned": 44591,
+    "locations_scanned": 44676,
     "matched_locations": 266,
     "matched_stations": 280,
-    "matched_evses": 1471,
+    "matched_evses": 1466,
     "errors": [
       "elu_mobility: mtls_subscription: Expecting value: line 1 column 1 (char 0)",
-      "smatrics: mtls_subscription: Expecting value: line 1 column 1 (char 0)"
+      "smatrics: mtls_subscription: Expecting value: line 1 column 1 (char 0)",
+      "volkswagencharginggroup: mtls_subscription: Expecting value: line 1 column 1 (char 0)"
     ],
     "sources": [
       {
@@ -116,7 +117,7 @@
       {
         "uid": "chargecloud",
         "name": "chargecloud",
-        "locations_scanned": 5145,
+        "locations_scanned": 5191,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -124,7 +125,7 @@
       {
         "uid": "eco_movement",
         "name": "eco movement",
-        "locations_scanned": 12873,
+        "locations_scanned": 12910,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -132,7 +133,7 @@
       {
         "uid": "edri",
         "name": "edri",
-        "locations_scanned": 460,
+        "locations_scanned": 457,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -143,15 +144,15 @@
         "locations_scanned": 2506,
         "matched_locations": 1,
         "matched_stations": 1,
-        "matched_evses": 8
+        "matched_evses": 4
       },
       {
         "uid": "eround",
         "name": "eround",
-        "locations_scanned": 4478,
-        "matched_locations": 1,
-        "matched_stations": 1,
-        "matched_evses": 2
+        "locations_scanned": 4489,
+        "matched_locations": 0,
+        "matched_stations": 0,
+        "matched_evses": 0
       },
       {
         "uid": "ladenetz_de_ladestationsdaten",
@@ -164,7 +165,7 @@
       {
         "uid": "m8mit",
         "name": "m8mit",
-        "locations_scanned": 148,
+        "locations_scanned": 144,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -172,7 +173,7 @@
       {
         "uid": "monta",
         "name": "monta",
-        "locations_scanned": 589,
+        "locations_scanned": 587,
         "matched_locations": 0,
         "matched_stations": 0,
         "matched_evses": 0
@@ -189,9 +190,9 @@
         "uid": "tesla",
         "name": "tesla",
         "locations_scanned": 320,
-        "matched_locations": 0,
-        "matched_stations": 0,
-        "matched_evses": 0
+        "matched_locations": 1,
+        "matched_stations": 1,
+        "matched_evses": 1
       },
       {
         "uid": "vaylens",
@@ -212,19 +213,32 @@
     ]
   },
   "static_detail_lookup": {
-    "offers_discovered": 47,
-    "static_offers_considered": 23,
+    "offers_discovered": 49,
+    "static_offers_considered": 24,
     "sources_used": 14,
-    "matched_sites": 10098,
-    "matched_stations": 9778,
-    "stations_with_price": 3998,
-    "stations_with_opening_hours": 11593,
-    "stations_with_helpdesk": 5378,
+    "matched_sites": 10123,
+    "matched_stations": 9804,
+    "stations_with_price": 4294,
+    "stations_with_opening_hours": 11590,
+    "stations_with_helpdesk": 5380,
     "errors": [
+      "982969565784539136: noauth: 403 Client Error:  for url: https://mobilithek.info/mdp-api/mdp-conn-server/v1/publication/982969565784539136/file/noauth",
+      "976221024898781184: mtls_subscription: Expecting value: line 1 column 1 (char 0)",
       "951517095896416256: direct_access_url: 403 Client Error: Forbidden for url: https://d1269bxe5ubfat.cloudfront.net/bnetza-api/data/bnetza_api_ladepunkt000.csv?v=1",
       "842113170303512576: direct_access_url: 403 Client Error: Forbidden for url: https://d1269bxe5ubfat.cloudfront.net/bnetza-lsr/data/ladepunktFactTable.csv?v=1"
     ],
     "sources": [
+      {
+        "uid": "mobilithek_stadtwerke_erft_static",
+        "publication_id": "982969565784539136",
+        "title": "AFIR-recharging-stat-Stadtwerke Erft GmbH",
+        "publisher": "",
+        "access_mode": "auth",
+        "status": "fetch_failed",
+        "error": "noauth: 403 Client Error:  for url: https://mobilithek.info/mdp-api/mdp-conn-server/v1/publication/982969565784539136/file/noauth",
+        "matched_sites": 0,
+        "matched_stations": 0
+      },
       {
         "uid": "mobilithek_tc_backend_qa_static",
         "publication_id": "981218494322012160",
@@ -289,7 +303,7 @@
         "access_mode": "noauth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 5145,
+        "sites_scanned": 5191,
         "matched_sites": 621,
         "matched_stations": 621
       },
@@ -298,8 +312,9 @@
         "publication_id": "976221024898781184",
         "title": "AFIR-recharging-stat-VolkswagenChargingGroup",
         "publisher": "Volkswagen Group Charging",
-        "access_mode": "auth",
-        "status": "not_accessible",
+        "access_mode": "mtls_subscription",
+        "status": "fetch_failed",
+        "error": "mtls_subscription: Expecting value: line 1 column 1 (char 0)",
         "matched_sites": 0,
         "matched_stations": 0
       },
@@ -323,9 +338,9 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 460,
-        "matched_sites": 266,
-        "matched_stations": 266
+        "sites_scanned": 457,
+        "matched_sites": 262,
+        "matched_stations": 262
       },
       {
         "uid": "mobilithek_m8mit_static",
@@ -335,9 +350,9 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 148,
-        "matched_sites": 16,
-        "matched_stations": 16
+        "sites_scanned": 144,
+        "matched_sites": 15,
+        "matched_stations": 15
       },
       {
         "uid": "mobilithek_pump_static",
@@ -359,21 +374,21 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 589,
-        "matched_sites": 170,
-        "matched_stations": 170
+        "sites_scanned": 587,
+        "matched_sites": 168,
+        "matched_stations": 168
       },
       {
         "uid": "mobilithek_eround_static",
         "publication_id": "961625658278940672",
         "title": "AFIR-recharging-stat-eRound",
         "publisher": "Hamburger Energienetze GmbH",
-        "access_mode": "auth",
+        "access_mode": "noauth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 4478,
-        "matched_sites": 1649,
-        "matched_stations": 1649
+        "sites_scanned": 4489,
+        "matched_sites": 1654,
+        "matched_stations": 1654
       },
       {
         "uid": "mobilithek_eco_movement_static",
@@ -383,9 +398,9 @@
         "access_mode": "auth",
         "status": "ok",
         "payload_kind": "datex",
-        "sites_scanned": 12873,
-        "matched_sites": 4107,
-        "matched_stations": 4049
+        "sites_scanned": 12910,
+        "matched_sites": 4134,
+        "matched_stations": 4077
       },
       {
         "uid": "mobilithek_bundesnetzagentur_liste_der_lades_ulen_aus_webserviceschnittstelle_static",
@@ -500,18 +515,18 @@
     "lookup_errors": 0,
     "cache_entries": 0,
     "osm_pbf_path": "data/germany-latest.osm.pbf",
-    "osm_pbf_bytes": 4742543240,
+    "osm_pbf_bytes": 4743302661,
     "osm_pbf_downloaded": true,
-    "osm_pbf_points": 332620,
-    "osm_pbf_grid_cells": 119646,
-    "osm_pbf_nodes_seen": 432088318,
-    "osm_pbf_ways_seen": 69968049,
-    "osm_pbf_relations_seen": 888010,
-    "osm_pbf_nodes_kept": 204816,
-    "osm_pbf_ways_kept": 127804
+    "osm_pbf_points": 332636,
+    "osm_pbf_grid_cells": 119649,
+    "osm_pbf_nodes_seen": 432158651,
+    "osm_pbf_ways_seen": 69977169,
+    "osm_pbf_relations_seen": 888078,
+    "osm_pbf_nodes_kept": 204826,
+    "osm_pbf_ways_kept": 127810
   },
   "operators": {
     "min_stations": 100,
-    "listed_operators": 23
+    "listed_operators": 20
   }
 }
