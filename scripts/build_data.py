@@ -2356,6 +2356,14 @@ def build_fast_projection_from_full_registry(
     return projected.drop(columns=["has_active_record"], errors="ignore").reset_index(drop=True)
 
 
+def filter_fast_chargers_with_amenities(df: pd.DataFrame) -> pd.DataFrame:
+    if "amenities_total" not in df.columns:
+        return df.copy().reset_index(drop=True)
+
+    amenity_counts = pd.to_numeric(df["amenities_total"], errors="coerce").fillna(0)
+    return df[amenity_counts > 0].copy().reset_index(drop=True)
+
+
 def fetch_live_occupancy_sources(session: requests.Session) -> list[dict[str, str]]:
     response = request_with_retries(
         "GET",
@@ -5598,6 +5606,11 @@ def main() -> None:
         f"cache_hits={amenity_stats['cache_hits']}, "
         f"deferred={amenity_stats['deferred']}, errors={amenity_stats['lookup_errors']}"
     )
+
+    pre_amenity_filter_count = len(enriched_df)
+    enriched_df = filter_fast_chargers_with_amenities(enriched_df)
+    removed_without_amenities = pre_amenity_filter_count - len(enriched_df)
+    log_info(f"Excluded fast chargers without nearby amenities: {removed_without_amenities}")
 
     enriched_df = enriched_df.sort_values(
         by=["amenities_total", "max_power_kw"],

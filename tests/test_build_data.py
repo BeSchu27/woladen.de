@@ -635,6 +635,21 @@ def test_build_full_registry_station_frame_reuses_legacy_fast_station_ids_and_ke
     assert int(fast_projection_df.iloc[0]["charging_points_count"]) == 5
 
 
+def test_filter_fast_chargers_with_amenities_keeps_only_rows_with_positive_amenity_count():
+    df = pd.DataFrame(
+        [
+            {"station_id": "station-1", "amenities_total": 3, "max_power_kw": 150.0},
+            {"station_id": "station-2", "amenities_total": 0, "max_power_kw": 300.0},
+            {"station_id": "station-3", "amenities_total": "", "max_power_kw": 50.0},
+            {"station_id": "station-4", "amenities_total": 1, "max_power_kw": 75.0},
+        ]
+    )
+
+    filtered = build_data.filter_fast_chargers_with_amenities(df)
+
+    assert filtered["station_id"].tolist() == ["station-1", "station-4"]
+
+
 def test_score_static_site_to_station_uses_station_operator_aliases():
     site = build_data.DatexStaticSite(
         site_id="site-1",
