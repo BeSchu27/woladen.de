@@ -36,6 +36,7 @@ from scripts.build_data import (
     normalize_text,
     parse_datex_static_sites,
     parse_datex_dynamic_states,
+    parse_eliso_static_sites,
 )
 
 DATA_DIR = REPO_ROOT / "data"
@@ -57,6 +58,7 @@ SEARCH_PAGE_SIZE = 200
 PUBLICATION_TIMEOUT_SECONDS = 15
 GRID_CELL_DEGREES = 0.01
 DATEX_V3_DATA_MODEL = "https://w3id.org/mdp/schema/data_model#DATEX_2_V3"
+MODEL_OTHER_DATA_MODEL = "https://w3id.org/mdp/schema/data_model#MODEL_OTHER"
 
 GENERIC_STEM_WORDS = {
     "afir",
@@ -333,8 +335,42 @@ def create_subscription(
     return result
 
 
-def parse_static_sites_with_operator(payload: dict[str, Any]) -> list[StaticSiteRecord]:
+def supports_eliso_generic_json_feed(provider_uid: str, feed: dict[str, Any] | None) -> bool:
+    if provider_uid != "eliso" or not isinstance(feed, dict):
+        return False
+    if str(feed.get("data_model") or "").strip() != MODEL_OTHER_DATA_MODEL:
+        return False
+    media_type = str((feed.get("content_data") or {}).get("mediaType") or "").strip().lower()
+    return media_type == "application/json" or media_type.endswith("+json") or "json" in media_type
+
+
+def parse_static_sites_with_operator(
+    payload: dict[str, Any] | list[Any],
+    *,
+    provider_uid: str = "",
+) -> list[StaticSiteRecord]:
     sites: list[StaticSiteRecord] = []
+    if provider_uid == "eliso" and isinstance(payload, list):
+        for site in parse_eliso_static_sites(payload):
+            sites.append(
+                StaticSiteRecord(
+                    site_id=site.site_id,
+                    station_ids=site.station_ids,
+                    evse_ids=site.evse_ids,
+                    lat=float(site.lat),
+                    lon=float(site.lon),
+                    postcode=site.postcode,
+                    city=site.city,
+                    address=site.address,
+                    total_evses=max(0, int(site.total_evses or 0)),
+                    operator_name=site.operator_name,
+                )
+            )
+        return sites
+
+    if not isinstance(payload, dict):
+        return sites
+
     for site in parse_datex_static_sites(payload):
         sites.append(
             StaticSiteRecord(
@@ -751,10 +787,11 @@ def probe_machine_certificate(
 
 def summarize_dynamic_probe(
     *,
-    payload: dict[str, Any] | None,
+    payload: dict[str, Any] | list[Any] | None,
     fetch_status: str,
     access_mode: str,
     delta_delivery: bool,
+    provider_uid: str = "",
 ) -> dict[str, Any]:
     if payload is None:
         return {
@@ -769,6 +806,43 @@ def summarize_dynamic_probe(
             "out_of_order_evses": 0,
             "unknown_evses": 0,
             "latest_last_updated": None,
+        }
+
+    generic_evses = payload.get("evses") if isinstance(payload, dict) else None
+    if provider_uid == "eliso" and isinstance(generic_evses, list):
+        status_counter: Counter[str] = Counter()
+        last_updated_values: list[str] = []
+
+        for item in generic_evses:
+            if not isinstance(item, dict):
+                continue
+            availability_value = normalize_text(str(item.get("availability_status") or ""))
+            operational_value = normalize_text(str(item.get("operational_status") or ""))
+            if operational_value == "nonoperational":
+                status_counter["OUTOFORDER"] += 1
+            elif availability_value == "notinuse":
+                status_counter["AVAILABLE"] += 1
+            elif availability_value == "inuse":
+                status_counter["OCCUPIED"] += 1
+            else:
+                status_counter["UNKNOWN"] += 1
+
+            last_updated = str(item.get("mobilithek_last_updated_dts") or "").strip()
+            if last_updated:
+                last_updated_values.append(last_updated)
+
+        return {
+            "fetch_status": fetch_status,
+            "access_mode": access_mode,
+            "delta_delivery": bool(delta_delivery),
+            "site_status_count": 0,
+            "station_status_count": 0,
+            "evse_status_count": int(sum(status_counter.values())),
+            "available_evses": int(status_counter.get("AVAILABLE", 0)),
+            "occupied_evses": int(status_counter.get("OCCUPIED", 0)),
+            "out_of_order_evses": int(status_counter.get("OUTOFORDER", 0)),
+            "unknown_evses": int(status_counter.get("UNKNOWN", 0)),
+            "latest_last_updated": max(last_updated_values) if last_updated_values else None,
         }
 
     site_states = parse_datex_dynamic_states(payload)
@@ -948,7 +1022,9 @@ def main() -> None:
         print(f"[static] {provider_uid}", flush=True)
         if not static_feed:
             static_coverage = empty_static_coverage(fetch_status="no_static_feed", access_mode="")
-        elif static_feed.get("data_model") != DATEX_V3_DATA_MODEL:
+        elif static_feed.get("data_model") != DATEX_V3_DATA_MODEL and not supports_eliso_generic_json_feed(
+            provider_uid, static_feed
+        ):
             media_type = str((static_feed.get("content_data") or {}).get("mediaType") or "")
             static_coverage = empty_static_coverage(
                 fetch_status=f"unsupported_static_format: {media_type or 'unknown'}",
@@ -969,7 +1045,7 @@ def main() -> None:
                     access_mode=resolved_access_mode,
                 )
             else:
-                sites = parse_static_sites_with_operator(payload)
+                sites = parse_static_sites_with_operator(payload, provider_uid=provider_uid)
                 site_operator_samples = list(
                     dict.fromkeys(site.operator_name for site in sites if site.operator_name)
                 )
@@ -999,14 +1075,18 @@ def main() -> None:
                 fetch_status="no_dynamic_feed",
                 access_mode="",
                 delta_delivery=False,
+                provider_uid=provider_uid,
             )
-        elif dynamic_feed.get("data_model") != DATEX_V3_DATA_MODEL:
+        elif dynamic_feed.get("data_model") != DATEX_V3_DATA_MODEL and not supports_eliso_generic_json_feed(
+            provider_uid, dynamic_feed
+        ):
             media_type = str((dynamic_feed.get("content_data") or {}).get("mediaType") or "")
             dynamic_coverage = summarize_dynamic_probe(
                 payload=None,
                 fetch_status=f"unsupported_dynamic_format: {media_type or 'unknown'}",
                 access_mode=str(dynamic_feed.get("access_mode") or ""),
                 delta_delivery=bool(dynamic_feed.get("delta_delivery")),
+                provider_uid=provider_uid,
             )
         else:
             payload, resolved_access_mode, fetch_error = fetch_static_payload_with_probe(
@@ -1021,6 +1101,7 @@ def main() -> None:
                 fetch_status="ok" if payload is not None else (fetch_error or "fetch_failed"),
                 access_mode=resolved_access_mode,
                 delta_delivery=bool(dynamic_feed.get("delta_delivery")),
+                provider_uid=provider_uid,
             )
 
         provider["coverage"] = {

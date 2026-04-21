@@ -118,6 +118,108 @@ def test_summarize_static_coverage_reports_full_registry_and_bundle_counters():
     assert summary["bundle_charging_point_coverage_ratio"] == 0.25
 
 
+def test_supports_eliso_generic_json_feed_accepts_model_other_application_json():
+    assert (
+        build_configs.supports_eliso_generic_json_feed(
+            "eliso",
+            {
+                "data_model": "https://w3id.org/mdp/schema/data_model#MODEL_OTHER",
+                "content_data": {"mediaType": "application/json"},
+            },
+        )
+        is True
+    )
+    assert (
+        build_configs.supports_eliso_generic_json_feed(
+            "edri",
+            {
+                "data_model": "https://w3id.org/mdp/schema/data_model#MODEL_OTHER",
+                "content_data": {"mediaType": "application/json"},
+            },
+        )
+        is False
+    )
+    assert (
+        build_configs.supports_eliso_generic_json_feed(
+            "eliso",
+            {
+                "data_model": "https://w3id.org/mdp/schema/data_model#MODEL_OTHER",
+                "content_data": {
+                    "mediaType": "https://www.iana.org/assignments/media-types/application/json"
+                },
+            },
+        )
+        is True
+    )
+
+
+def test_parse_static_sites_with_operator_parses_eliso_generic_static_payload():
+    payload = [
+        {
+            "operator_name": "eliso GmbH",
+            "address": "Gutshofstraße 26",
+            "postalCode": "26871",
+            "city": "Papenburg",
+            "chargepoints_count": 2,
+            "coordinates": {"latitude": 53.08, "longitude": 7.39},
+            "evses": [
+                {"evseId": "DE*ELI*E3603098"},
+                {"evseId": "DE*ELI*E3603099"},
+            ],
+        }
+    ]
+
+    sites = build_configs.parse_static_sites_with_operator(payload, provider_uid="eliso")
+
+    assert len(sites) == 1
+    assert sites[0].site_id == "Gutshofstraße 26 | 26871 | Papenburg"
+    assert sites[0].operator_name == "eliso GmbH"
+    assert sites[0].total_evses == 2
+    assert sites[0].evse_ids == ("DEELIE3603098", "DEELIE3603099")
+    assert sites[0].station_ids == ("DEELIE3603098", "DEELIE3603099")
+
+
+def test_summarize_dynamic_probe_supports_eliso_generic_payload():
+    payload = {
+        "evses": [
+            {
+                "evseId": "DE*ELI*E3603098",
+                "availability_status": "Not in use",
+                "operational_status": "Operational",
+                "mobilithek_last_updated_dts": "2026-04-21T18:00:00+00:00",
+            },
+            {
+                "evseId": "DE*ELI*E3603099",
+                "availability_status": "In use",
+                "operational_status": "Operational",
+                "mobilithek_last_updated_dts": "2026-04-21T18:05:00+00:00",
+            },
+            {
+                "evseId": "DE*ELI*E3603100",
+                "availability_status": "",
+                "operational_status": "Non-operational",
+                "mobilithek_last_updated_dts": "2026-04-21T17:59:00+00:00",
+            },
+        ]
+    }
+
+    summary = build_configs.summarize_dynamic_probe(
+        payload=payload,
+        fetch_status="ok",
+        access_mode="auth",
+        delta_delivery=False,
+        provider_uid="eliso",
+    )
+
+    assert summary["fetch_status"] == "ok"
+    assert summary["evse_status_count"] == 3
+    assert summary["available_evses"] == 1
+    assert summary["occupied_evses"] == 1
+    assert summary["out_of_order_evses"] == 1
+    assert summary["unknown_evses"] == 0
+    assert summary["latest_last_updated"] == "2026-04-21T18:05:00+00:00"
+
+
 def test_score_site_to_station_rejects_close_candidate_with_postcode_conflict_only():
     site = build_configs.StaticSiteRecord(
         site_id="site-enio-rosenheim",
@@ -150,3 +252,9 @@ def test_score_site_to_station_rejects_close_candidate_with_postcode_conflict_on
         station_row,
         publisher="ENIO GmbH",
     )
+
+    assert accepted is False
+    assert details["postcode_match"] is False
+    assert details["city_match"] is True
+    assert details["address_match"] is False
+    assert details["operator_similarity"] == 0.0
