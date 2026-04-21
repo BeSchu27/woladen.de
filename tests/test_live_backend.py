@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tarfile
+import tempfile
 import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -585,6 +586,38 @@ def test_load_provider_targets_merges_delivery_mode_and_push_fallback(app_config
     assert ampeco.push_fallback_after_seconds == 420
 
 
+def test_load_provider_targets_merges_override_file_without_registry(app_config):
+    _write_provider_fixture(app_config.provider_config_path)
+    override_path = app_config.provider_config_path.parent / "live_provider_overrides.json"
+    override_path.write_text(
+        json.dumps(
+            {
+                "ampeco": {
+                    "enabled": True,
+                    "fetch_kind": "mtls_subscription",
+                    "subscription_id": "2000001",
+                    "delivery_mode": "push_with_poll_fallback",
+                    "push_fallback_after_seconds": 420,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    providers = load_provider_targets(
+        app_config.provider_config_path,
+        override_path=override_path,
+    )
+
+    ampeco = [provider for provider in providers if provider.provider_uid == "ampeco"][0]
+    assert ampeco.enabled is True
+    assert ampeco.fetch_kind == "mtls_subscription"
+    assert ampeco.subscription_id == "2000001"
+    assert ampeco.fetch_url.endswith("subscriptionID=2000001")
+    assert ampeco.delivery_mode == "push_with_poll_fallback"
+    assert ampeco.push_fallback_after_seconds == 420
+
+
 def test_load_provider_targets_adds_synthetic_direct_url_provider(app_config):
     app_config.provider_config_path.write_text(json.dumps({"providers": []}), encoding="utf-8")
     app_config.subscription_registry_path.write_text(
@@ -660,6 +693,27 @@ def test_real_monta_subscription_registry_entry_enables_mtls_target():
     assert monta.subscription_id == "982024950290042880"
     assert monta.publication_id == "963870983660167168"
     assert monta.fetch_url.endswith("subscriptionID=982024950290042880")
+
+
+def test_real_enio_override_entry_enables_mtls_target_without_registry_entry():
+    repo_root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        empty_registry = Path(tmp_dir) / "subscriptions.json"
+        empty_registry.write_text("{}\n", encoding="utf-8")
+        providers = load_provider_targets(
+            repo_root / "data" / "mobilithek_afir_provider_configs.json",
+            override_path=repo_root / "data" / "live_provider_overrides.json",
+            subscription_registry_path=empty_registry,
+        )
+
+    enio = [provider for provider in providers if provider.provider_uid == "enio"][0]
+    assert enio.enabled is True
+    assert enio.fetch_kind == "mtls_subscription"
+    assert enio.subscription_id == "983491435542016000"
+    assert enio.publication_id == "968541134128902144"
+    assert enio.fetch_url.endswith("subscriptionID=983491435542016000")
+    assert enio.delivery_mode == "push_with_poll_fallback"
+    assert enio.push_fallback_after_seconds == 300
 
 
 def test_load_site_matches_derives_bundle_datex_site_matches(app_config):

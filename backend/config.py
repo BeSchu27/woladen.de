@@ -22,6 +22,15 @@ def _env_optional_path(name: str) -> Path | None:
     return Path(value).expanduser() if value else None
 
 
+def _env_existing_path(name: str, default: Path) -> Path | None:
+    value = str(os.environ.get(name, "")).strip()
+    if value:
+        return Path(value).expanduser()
+    if default.exists():
+        return default
+    return None
+
+
 def _env_csv(name: str) -> tuple[str, ...]:
     value = str(os.environ.get(name, "")).strip()
     if not value:
@@ -97,10 +106,9 @@ class AppConfig:
         )
     )
     provider_override_path: Path | None = field(
-        default_factory=lambda: (
-            _env_path("WOLADEN_LIVE_PROVIDER_OVERRIDE_PATH", REPO_ROOT / "data" / "live_provider_overrides.json")
-            if str(os.environ.get("WOLADEN_LIVE_PROVIDER_OVERRIDE_PATH", "")).strip()
-            else None
+        default_factory=lambda: _env_existing_path(
+            "WOLADEN_LIVE_PROVIDER_OVERRIDE_PATH",
+            REPO_ROOT / "data" / "live_provider_overrides.json",
         )
     )
     subscription_registry_path: Path = field(

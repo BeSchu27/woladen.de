@@ -79,6 +79,20 @@ def test_app_config_reuses_custom_chargers_catalog_as_full_registry_default(tmp_
     assert config.full_chargers_csv_path == custom_catalog
 
 
+def test_app_config_uses_existing_live_provider_override_default(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    default_override = data_dir / "live_provider_overrides.json"
+    default_override.write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_module, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("WOLADEN_LIVE_PROVIDER_OVERRIDE_PATH", raising=False)
+
+    config = AppConfig()
+
+    assert config.provider_override_path == default_override
+
+
 def test_app_config_reads_sqlite_retry_and_queue_retention_env(monkeypatch):
     monkeypatch.setenv("WOLADEN_LIVE_SQLITE_LOCK_RETRY_SECONDS", "42")
     monkeypatch.setenv("WOLADEN_LIVE_QUEUE_CLEANUP_INTERVAL_SECONDS", "123")

@@ -1,0 +1,12 @@
+{
+  "enio": {
+    "display_name": "enio",
+    "publisher": "ENIO GmbH",
+    "enabled": true,
+    "fetch_kind": "mtls_subscription",
+    "subscription_id": "983491435542016000",
+    "static_subscription_id": "983491437521539072",
+    "delivery_mode": "push_with_poll_fallback",
+    "push_fallback_after_seconds": 300
+  }
+}
