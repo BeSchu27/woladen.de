@@ -116,3 +116,37 @@ def test_summarize_static_coverage_reports_full_registry_and_bundle_counters():
     assert summary["bundle_matched_charging_points"] == 2
     assert summary["bundle_station_coverage_ratio"] == 0.333333
     assert summary["bundle_charging_point_coverage_ratio"] == 0.25
+
+
+def test_score_site_to_station_rejects_close_candidate_with_postcode_conflict_only():
+    site = build_configs.StaticSiteRecord(
+        site_id="site-enio-rosenheim",
+        station_ids=("KathreinECSim02", "KathreinECSim03", "KathreinECSim01"),
+        evse_ids=(),
+        lat=47.85713,
+        lon=12.11810,
+        postcode="83022",
+        city="Rosenheim",
+        address="Wittelsbacherstraße",
+        total_evses=6,
+        operator_name="",
+    )
+    station_row = pd.Series(
+        {
+            "station_id": "station-1",
+            "lat": 47.857127,
+            "lon": 12.118105,
+            "postcode": "83026",
+            "city": "Rosenheim",
+            "address": "Äußere Münchenerstraße 70a 83026 Rosenheim",
+            "operator": "Erich Vinzenz KFZ-Werkstatt",
+            "charging_points_count": 1,
+            "in_bundle": False,
+        }
+    )
+
+    accepted, _, _, details = build_configs.score_site_to_station(
+        site,
+        station_row,
+        publisher="ENIO GmbH",
+    )

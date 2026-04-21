@@ -3496,7 +3496,9 @@ def score_static_site_to_station(
     if distance_m > max_distance_m and evse_overlap <= 0:
         return False, distance_m, distance_m, {}
 
-    postcode_match = bool(site.postcode and str(station_row.get("postcode") or "").strip() == site.postcode)
+    station_postcode = str(station_row.get("postcode") or "").strip()
+    postcode_match = bool(site.postcode and station_postcode == site.postcode)
+    postcode_conflict = bool(site.postcode and station_postcode and station_postcode != site.postcode)
     city_match = bool(
         site.city and normalize_text(str(station_row.get("city") or "")) == normalize_text(site.city)
     )
@@ -3536,7 +3538,10 @@ def score_static_site_to_station(
     if evse_overlap > 0:
         accepted = True
     elif distance_m <= 30.0:
-        accepted = True
+        if postcode_conflict:
+            accepted = bool(address_match or op_similarity > 0.0)
+        else:
+            accepted = bool(postcode_match or city_match or address_match or op_similarity > 0.0)
     elif postcode_match and (address_match or op_similarity > 0.0 or distance_m <= 80.0):
         accepted = True
     elif address_match and distance_m <= 120.0:

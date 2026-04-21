@@ -699,6 +699,47 @@ def test_score_static_site_to_station_uses_station_operator_aliases():
     assert details_without_alias["operator_similarity"] == 0.0
 
 
+def test_score_static_site_to_station_rejects_close_candidate_with_postcode_conflict_only():
+    site = build_data.DatexStaticSite(
+        site_id="site-enio-rosenheim",
+        station_ids=("KathreinECSim02", "KathreinECSim03", "KathreinECSim01"),
+        lat=47.85713,
+        lon=12.11810,
+        postcode="83022",
+        city="Rosenheim",
+        address="Wittelsbacherstraße",
+        operator_name="",
+        total_evses=6,
+        evse_ids=(),
+    )
+    station_row = {
+        "station_id": "station-1",
+        "lat": 47.857127,
+        "lon": 12.118105,
+        "postcode": "83026",
+        "city": "Rosenheim",
+        "address": "Äußere Münchenerstraße 70a 83026 Rosenheim",
+        "operator": "Erich Vinzenz KFZ-Werkstatt",
+        "operator_aliases": [],
+        "charging_points_count": 1,
+        "evse_ids": [],
+        "bnetza_display_name": "",
+    }
+
+    accepted, _, _, details = build_data.score_static_site_to_station(
+        site,
+        station_row,
+        publisher="ENIO GmbH",
+        max_distance_m=200.0,
+    )
+
+    assert accepted is False
+    assert details["postcode_match"] is False
+    assert details["city_match"] is True
+    assert details["address_match"] is False
+    assert details["operator_similarity"] == 0.0
+
+
 def test_derive_eliso_static_site_id_prefers_location_fields_over_operator_code():
     site = {
         "operator": "DEELI",
