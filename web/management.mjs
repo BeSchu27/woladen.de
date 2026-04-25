@@ -261,8 +261,9 @@ function chartThemeColor(index = 0) {
   return palette[index % palette.length];
 }
 
-function createLineChart(canvasId, series, { colorIndex = 0 } = {}) {
+function createLineChart(canvasId, series, { colorIndex = 0, color = null } = {}) {
   const canvas = document.getElementById(canvasId);
+  const seriesColor = color ?? chartThemeColor(colorIndex);
   return new Chart(canvas.getContext("2d"), {
     type: "line",
     data: {
@@ -271,8 +272,10 @@ function createLineChart(canvasId, series, { colorIndex = 0 } = {}) {
         {
           label: series.label,
           data: series.values,
-          borderColor: chartThemeColor(colorIndex),
-          backgroundColor: chartThemeColor(colorIndex),
+          borderColor: seriesColor,
+          backgroundColor: seriesColor,
+          pointBackgroundColor: seriesColor,
+          pointBorderColor: seriesColor,
           tension: 0.25,
           fill: false,
         },
@@ -424,7 +427,7 @@ async function initManagementPage() {
     overviewChart = createLineChart(
       "management-overview-chart",
       buildOverviewSeries(trendsPayload, overviewMetricSelect.value),
-      { colorIndex: 1 },
+      { color: "#000000" },
     );
   }
 
