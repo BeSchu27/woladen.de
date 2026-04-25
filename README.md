@@ -1,6 +1,6 @@
 
 
-# Projekt67
+# Projekt0
 
 Fast chargers in Germany with nearby amenities from OpenStreetMap, now with AFIR-based live data, where available.
 
