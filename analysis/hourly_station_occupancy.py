@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Build an hourly occupied-EVSE bar chart for one station from an AFIR archive."""
+"""Build an hourly occupied-EVSE bar chart for one station from an AFIR archive.
+
+The script downloads the needed daily Hugging Face archive when it is not
+already available locally.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import tarfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -19,12 +24,41 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.config import AppConfig
+from backend.archive import DailyResponseArchiveDownloader
+from backend.config import AppConfig, load_env_file
 from backend.datex import decode_json_payload, extract_dynamic_facts, parse_iso_datetime
 from backend.loaders import load_evse_matches, load_site_matches, load_station_records
 from backend.models import StationRecord
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "analysis" / "output"
+DEFAULT_HF_ARCHIVE_REPO_ID = "loffenauer/AFIR"
+DEFAULT_HF_ARCHIVE_PATH_PREFIX = "provider-response-archives"
+ARCHIVE_ENV_FILE_KEYS = frozenset(
+    {
+        "WOLADEN_LIVE_ARCHIVE_DIR",
+        "WOLADEN_LIVE_ARCHIVE_TIMEZONE",
+        "WOLADEN_LIVE_HF_ARCHIVE_REPO_ID",
+        "WOLADEN_LIVE_HF_ARCHIVE_REPO_TYPE",
+        "WOLADEN_LIVE_HF_ARCHIVE_PATH_PREFIX",
+        "WOLADEN_LIVE_HF_ARCHIVE_TOKEN_FILE",
+        "WOLADEN_LIVE_HF_ARCHIVE_TOKEN",
+        "HF_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HUGGINGFACE_TOKEN",
+    }
+)
+TOKEN_ENV_NAMES = (
+    "WOLADEN_LIVE_HF_ARCHIVE_TOKEN",
+    "HF_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
+    "HUGGINGFACE_TOKEN",
+)
+DEFAULT_HF_TOKEN_FILES = (
+    REPO_ROOT / "secret" / "hf_private",
+    REPO_ROOT / "secret" / "hf_private.txt",
+    REPO_ROOT / "secret" / "HF_PRIVATE",
+    REPO_ROOT / "secret" / "HF_PRIVATE.txt",
+)
 
 
 @dataclass(frozen=True)
@@ -159,6 +193,88 @@ def berlin_timezone_for_day(target_date: date) -> tzinfo:
 
 def archive_path_for_date(config: AppConfig, target_date: date) -> Path:
     return config.archive_dir / f"live-provider-responses-{target_date.isoformat()}.tgz"
+
+
+def discover_default_hf_token_file() -> Path | None:
+    for candidate in DEFAULT_HF_TOKEN_FILES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def configure_archive_environment(args: argparse.Namespace) -> None:
+    if args.env_file is not None:
+        load_env_file(args.env_file, allowed_keys=ARCHIVE_ENV_FILE_KEYS)
+
+    if args.hf_repo_id:
+        os.environ["WOLADEN_LIVE_HF_ARCHIVE_REPO_ID"] = args.hf_repo_id
+    elif not str(os.environ.get("WOLADEN_LIVE_HF_ARCHIVE_REPO_ID", "")).strip():
+        os.environ["WOLADEN_LIVE_HF_ARCHIVE_REPO_ID"] = DEFAULT_HF_ARCHIVE_REPO_ID
+
+    if args.hf_path_prefix is not None:
+        os.environ["WOLADEN_LIVE_HF_ARCHIVE_PATH_PREFIX"] = args.hf_path_prefix.strip().strip("/")
+    elif not str(os.environ.get("WOLADEN_LIVE_HF_ARCHIVE_PATH_PREFIX", "")).strip():
+        os.environ["WOLADEN_LIVE_HF_ARCHIVE_PATH_PREFIX"] = DEFAULT_HF_ARCHIVE_PATH_PREFIX
+
+    if args.hf_token_file is not None:
+        os.environ["WOLADEN_LIVE_HF_ARCHIVE_TOKEN_FILE"] = str(args.hf_token_file)
+    elif (
+        not str(os.environ.get("WOLADEN_LIVE_HF_ARCHIVE_TOKEN_FILE", "")).strip()
+        and not any(str(os.environ.get(env_name, "")).strip() for env_name in TOKEN_ENV_NAMES)
+    ):
+        token_file = discover_default_hf_token_file()
+        if token_file is not None:
+            os.environ["WOLADEN_LIVE_HF_ARCHIVE_TOKEN_FILE"] = str(token_file)
+
+
+def ensure_archive_available(
+    config: AppConfig,
+    *,
+    target_date: date,
+    archive_override: Path | None,
+    no_download: bool,
+    force_download: bool,
+) -> tuple[Path, dict[str, Any] | None]:
+    if archive_override is not None:
+        if not archive_override.exists():
+            raise FileNotFoundError(
+                f"explicit archive path does not exist: {archive_override}. "
+                "Remove --archive to let the script download the configured daily archive."
+            )
+        return archive_override, None
+
+    archive_path = archive_path_for_date(config, target_date)
+    if archive_path.exists() and not force_download:
+        return archive_path, {
+            "result": "already_present",
+            "target_path": str(archive_path),
+            "file_byte_length": int(archive_path.stat().st_size),
+        }
+
+    if no_download:
+        raise FileNotFoundError(f"missing archive and downloads are disabled: {archive_path}")
+
+    downloader = DailyResponseArchiveDownloader(config)
+    try:
+        result = downloader.download_date(target_date, force=force_download)
+    except ModuleNotFoundError as exc:
+        if exc.name == "huggingface_hub":
+            raise SystemExit(
+                "Downloading requires huggingface_hub. Install it with: "
+                "python -m pip install -r requirements-live.txt"
+            ) from exc
+        raise
+
+    if result.get("result") == "skipped_missing_repo_config":
+        raise SystemExit(
+            "Missing Hugging Face archive repo config. Pass --hf-repo-id or set "
+            "WOLADEN_LIVE_HF_ARCHIVE_REPO_ID."
+        )
+
+    downloaded_path = Path(str(result.get("target_path") or archive_path))
+    if not downloaded_path.exists():
+        raise FileNotFoundError(f"download completed but archive is missing: {downloaded_path}")
+    return downloaded_path, result
 
 
 def _record_timestamp(record: dict[str, Any]) -> str:
@@ -442,11 +558,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--city", default="", help="Optional exact city filter used with --query")
     parser.add_argument("--archive", type=Path, default=None, help="Path to live-provider-responses-YYYY-MM-DD.tgz")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Output directory for JSON and SVG")
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help="Optional env file with Hugging Face archive settings and token location",
+    )
+    parser.add_argument(
+        "--hf-repo-id",
+        default="",
+        help=f"Hugging Face dataset repo id; defaults to {DEFAULT_HF_ARCHIVE_REPO_ID}",
+    )
+    parser.add_argument(
+        "--hf-path-prefix",
+        default=None,
+        help=f"Archive path prefix in the dataset; defaults to {DEFAULT_HF_ARCHIVE_PATH_PREFIX}",
+    )
+    parser.add_argument(
+        "--hf-token-file",
+        type=Path,
+        default=None,
+        help="Optional local file containing a Hugging Face token; the token itself is never written to outputs",
+    )
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Do not download a missing daily archive; fail if it is not already local",
+    )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Download the daily archive even if it already exists locally",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    configure_archive_environment(args)
     config = AppConfig()
     station_catalog_path = config.full_chargers_csv_path or config.chargers_csv_path
     stations = load_station_records(station_catalog_path)
@@ -457,7 +606,16 @@ def main() -> None:
         city=args.city or None,
     )
     identifiers = build_station_identifiers(config, station)
-    archive_path = args.archive or archive_path_for_date(config, args.date)
+    try:
+        archive_path, download_result = ensure_archive_available(
+            config,
+            target_date=args.date,
+            archive_override=args.archive,
+            no_download=args.no_download,
+            force_download=args.force_download,
+        )
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
 
     events, stats = collect_status_events(
         archive_path,
@@ -491,6 +649,7 @@ def main() -> None:
                 "address": station.address,
                 "date": args.date.isoformat(),
                 "archive": str(archive_path.resolve()),
+                "archive_download": download_result,
                 "json": str(json_path.resolve()),
                 "svg": str(svg_path.resolve()),
                 "matching_messages": stats["matching_messages"],
