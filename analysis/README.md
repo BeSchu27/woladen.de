@@ -20,6 +20,23 @@ The first pass is intentionally narrow:
 
 The analysis CLI works on local `.tgz` archives. The expected source is the Hugging Face archive dataset, mirrored into `data/live_archives/` with the repo downloader script.
 
+For the hourly station occupancy chart, mirror the needed Hugging Face archives first:
+
+```bash
+python3 -m analysis.download_hf_archives \
+  --date 2026-04-20 \
+  --days 7
+```
+
+Then build the chart from the local archives:
+
+```bash
+python3 -m analysis.hourly_station_occupancy \
+  --station 'https://woladen.de/?station=cf43ec02e883007d' \
+  --date 2026-04-20 \
+  --days 7
+```
+
 To inspect remote availability first:
 
 ```bash
