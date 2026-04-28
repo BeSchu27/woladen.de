@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an hourly occupied-EVSE bar chart for one station from an AFIR archive."""
+"""Build an hourly occupied-EVSE bar chart for one station from AFIR archives."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from backend.loaders import load_evse_matches, load_site_matches, load_station_r
 from backend.models import StationRecord
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "analysis" / "output"
+DEFAULT_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,16 @@ class StationIdentifiers:
 
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value.strip())
+
+
+def default_end_date() -> date:
+    return datetime.now(berlin_timezone_for_day(date.today())).date() - timedelta(days=1)
+
+
+def date_window(end_date: date, days: int) -> list[date]:
+    if days < 1:
+        raise SystemExit("--days must be at least 1")
+    return [end_date - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
 
 
 def _slugify(value: str) -> str:
@@ -165,6 +176,23 @@ def _record_timestamp(record: dict[str, Any]) -> str:
     return str(record.get("received_at") or record.get("fetched_at") or record.get("logged_at") or "")
 
 
+def empty_archive_stats() -> dict[str, int]:
+    return {
+        "archive_members_seen": 0,
+        "provider_members_seen": 0,
+        "matching_messages": 0,
+        "parse_errors": 0,
+    }
+
+
+def combine_archive_stats(stats_objects: list[dict[str, int]]) -> dict[str, int]:
+    combined = empty_archive_stats()
+    for stats in stats_objects:
+        for key in combined:
+            combined[key] += int(stats.get(key, 0) or 0)
+    return combined
+
+
 def collect_status_events(
     archive_path: Path,
     *,
@@ -205,12 +233,7 @@ def collect_status_events(
     provider_filter = identifiers.provider_uids
 
     events: list[tuple[datetime, str, str, str]] = []
-    stats = {
-        "archive_members_seen": 0,
-        "provider_members_seen": 0,
-        "matching_messages": 0,
-        "parse_errors": 0,
-    }
+    stats = empty_archive_stats()
 
     with tarfile.open(archive_path, mode="r:gz") as archive:
         for member in archive:
@@ -325,17 +348,26 @@ def hourly_average_occupied(
     return [seconds / 3600 for seconds in hour_occupied_seconds]
 
 
+def average_hourly_values(daily_values: list[list[float]]) -> list[float]:
+    if not daily_values:
+        return [0.0] * 24
+    return [sum(values[hour] for values in daily_values) / len(daily_values) for hour in range(24)]
+
+
 def write_json_output(
     path: Path,
     *,
     station: StationRecord,
-    target_date: date,
+    start_date: date,
+    end_date: date,
+    requested_days: int,
     identifiers: StationIdentifiers,
     stats: dict[str, int],
-    changes: list[tuple[datetime, str, str, str]],
+    daily_results: list[dict[str, Any]],
+    missing_archives: list[str],
     hourly_values: list[float],
 ) -> None:
-    berlin_tz = berlin_timezone_for_day(target_date)
+    berlin_tz = berlin_timezone_for_day(end_date)
     payload = {
         "station": {
             "station_id": station.station_id,
@@ -345,78 +377,138 @@ def write_json_output(
             "charging_points_count": station.charging_points_count,
             "max_power_kw": station.max_power_kw,
         },
-        "date": target_date.isoformat(),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "requested_days": requested_days,
+        "included_days": len(daily_results),
+        "missing_archives": missing_archives,
         "timezone": "Europe/Berlin",
-        "metric": "average occupied EVSEs per hour; unknown status is not counted as occupied",
+        "metric": "mean of daily average occupied EVSEs per hour; unknown status is not counted as occupied",
         "provider_uids": sorted(identifiers.provider_uids),
         "site_ids": sorted(identifiers.site_ids),
         "evse_ids": sorted(identifiers.evse_ids),
         "archive_stats": stats,
         "hourly_average_occupied": {f"{hour:02d}:00": round(value, 3) for hour, value in enumerate(hourly_values)},
-        "status_changes": [
+        "daily_results": [
             {
-                "time_local": observed_at.astimezone(berlin_tz).isoformat(),
-                "evse_id": evse_id,
-                "availability_status": availability_status,
-                "operational_status": operational_status,
+                "date": result["date"],
+                "archive": result["archive"],
+                "archive_stats": result["archive_stats"],
+                "status_change_count": len(result["changes"]),
+                "hourly_average_occupied": {
+                    f"{hour:02d}:00": round(value, 3) for hour, value in enumerate(result["hourly_values"])
+                },
+                "status_changes": [
+                    {
+                        "time_local": observed_at.astimezone(berlin_tz).isoformat(),
+                        "evse_id": evse_id,
+                        "availability_status": availability_status,
+                        "operational_status": operational_status,
+                    }
+                    for observed_at, evse_id, availability_status, operational_status in result["changes"]
+                ],
             }
-            for observed_at, evse_id, availability_status, operational_status in changes
+            for result in daily_results
         ],
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def write_svg_chart(path: Path, *, station: StationRecord, target_date: date, hourly_values: list[float]) -> None:
+def write_svg_chart(
+    path: Path,
+    *,
+    station: StationRecord,
+    start_date: date,
+    end_date: date,
+    included_days: int,
+    requested_days: int,
+    hourly_values: list[float],
+) -> None:
     width, height = 1200, 720
-    left, right, top, bottom = 92, 44, 120, 118
+    left, right, top, bottom = 118, 72, 220, 112
     plot_w = width - left - right
     plot_h = height - top - bottom
     bar_gap = 8
     bar_w = (plot_w - bar_gap * 23) / 24
     max_y = max(1, station.charging_points_count, int(max(hourly_values + [0]) + 1))
+    max_value = max(hourly_values + [0])
 
-    title = "Belegte Ladepunkte pro Stunde"
-    subtitle = f"{station.operator}, {station.address} - {target_date.strftime('%d.%m.%Y')}"
-    note = "Wert = durchschnittlich belegte Ladepunkte je Stunde; unbekannte Zustaende zaehlen nicht als belegt."
+    font_family = "'Space Grotesk', 'Avenir Next', Arial, sans-serif"
+    color_bg = "#f8fafc"
+    color_surface = "#ffffff"
+    color_surface_dim = "#f1f5f9"
+    color_primary = "#0f766e"
+    color_primary_dark = "#0d5e56"
+    color_text = "#1e293b"
+    color_muted = "#64748b"
+    color_border = "#e2e8f0"
+
+    title = "Auslastung pro Stunde"
+    if start_date == end_date:
+        date_label = end_date.strftime("%d.%m.%Y")
+    else:
+        date_label = f"{start_date.strftime('%d.%m.%Y')} bis {end_date.strftime('%d.%m.%Y')}"
+    subtitle = f"{station.operator}, {station.address}"
+    note = (
+        "Mittelwert der belegten Ladepunkte je Stunde; unbekannte Zustände zählen nicht als belegt."
+    )
+    coverage_label = f"{included_days}/{requested_days} Tage"
 
     svg: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-        '<rect width="100%" height="100%" fill="#fbfaf6"/>',
-        f'<text x="92" y="50" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="#101820">{title}</text>',
-        f'<text x="92" y="84" font-family="Arial, sans-serif" font-size="18" fill="#46515c">{html_escape(subtitle)}</text>',
-        f'<text x="92" y="108" font-family="Arial, sans-serif" font-size="14" fill="#6b7280">{note}</text>',
+        "<defs>",
+        '<filter id="cardShadow" x="-5%" y="-5%" width="110%" height="120%">',
+        '<feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0f172a" flood-opacity="0.10"/>',
+        "</filter>",
+        '<linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">',
+        f'<stop offset="0%" stop-color="{color_primary}"/>',
+        f'<stop offset="100%" stop-color="{color_primary_dark}"/>',
+        "</linearGradient>",
+        "</defs>",
+        f'<rect width="100%" height="100%" fill="{color_bg}"/>',
+        f'<rect x="48" y="42" width="{width - 96}" height="{height - 84}" rx="16" fill="{color_surface}" stroke="{color_border}" filter="url(#cardShadow)"/>',
+        f'<text x="88" y="92" font-family="{font_family}" font-size="15" font-weight="700" fill="{color_primary_dark}">woladen.de</text>',
+        f'<rect x="190" y="70" width="104" height="34" rx="17" fill="{color_surface_dim}" stroke="{color_border}"/>',
+        f'<text x="242" y="92" text-anchor="middle" font-family="{font_family}" font-size="14" font-weight="700" fill="{color_text}">{coverage_label}</text>',
+        f'<text x="88" y="145" font-family="{font_family}" font-size="38" font-weight="800" fill="{color_text}">{title}</text>',
+        f'<text x="88" y="178" font-family="{font_family}" font-size="17" fill="{color_muted}">{html_escape(subtitle)}</text>',
+        f'<text x="{width - 88}" y="146" text-anchor="end" font-family="{font_family}" font-size="17" font-weight="700" fill="{color_text}">{date_label}</text>',
+        f'<text x="88" y="207" font-family="{font_family}" font-size="14" fill="{color_muted}">{note}</text>',
     ]
     for tick in range(0, max_y + 1):
         y = top + plot_h - (tick / max_y) * plot_h
-        svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" stroke="#d9ded7" stroke-width="1"/>')
+        stroke_width = "1.4" if tick == 0 else "1"
+        svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" stroke="{color_border}" stroke-width="{stroke_width}"/>')
         svg.append(
-            f'<text x="{left - 16}" y="{y + 5:.1f}" text-anchor="end" font-family="Arial, sans-serif" font-size="14" fill="#4b5563">{tick}</text>'
+            f'<text x="{left - 18}" y="{y + 5:.1f}" text-anchor="end" font-family="{font_family}" font-size="13" fill="{color_muted}">{tick}</text>'
         )
-    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="#1f2937" stroke-width="1.4"/>')
-    svg.append(
-        f'<line x1="{left}" y1="{top + plot_h}" x2="{width - right}" y2="{top + plot_h}" stroke="#1f2937" stroke-width="1.4"/>'
-    )
     for hour, value in enumerate(hourly_values):
         x = left + hour * (bar_w + bar_gap)
         bar_h = (value / max_y) * plot_h
         y = top + plot_h - bar_h
-        fill = "#111111" if value > 0 else "#d8d5ca"
-        svg.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" rx="5" fill="{fill}"/>')
+        fill = "url(#barGradient)"
+        if value <= 0:
+            fill = color_surface_dim
+            bar_h = 4
+            y = top + plot_h - bar_h
+        svg.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" rx="7" fill="{fill}"/>')
         if value > 0:
             svg.append(
-                f'<text x="{x + bar_w / 2:.1f}" y="{y - 7:.1f}" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#111111">{value:.1f}</text>'
+                f'<text x="{x + bar_w / 2:.1f}" y="{y - 9:.1f}" text-anchor="middle" font-family="{font_family}" font-size="12" font-weight="700" fill="{color_text}">{value:.1f}</text>'
             )
+        hour_color = color_text if hour % 3 == 0 else color_muted
+        hour_weight = "700" if hour % 3 == 0 else "500"
         svg.append(
-            f'<text x="{x + bar_w / 2:.1f}" y="{top + plot_h + 28}" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#4b5563">{hour:02d}</text>'
+            f'<text x="{x + bar_w / 2:.1f}" y="{top + plot_h + 28}" text-anchor="middle" font-family="{font_family}" font-size="13" font-weight="{hour_weight}" fill="{hour_color}">{hour:02d}</text>'
         )
     svg.append(
-        f'<text x="{left + plot_w / 2:.1f}" y="{height - 34}" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#374151">Uhrzeit (Stunde des Tages)</text>'
+        f'<text x="{left + plot_w / 2:.1f}" y="{height - 62}" text-anchor="middle" font-family="{font_family}" font-size="15" font-weight="700" fill="{color_text}">Uhrzeit</text>'
     )
     svg.append(
-        f'<text transform="translate(28 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#374151">Durchschnittlich belegte Ladepunkte</text>'
+        f'<text transform="translate(66 {top + plot_h / 2:.1f}) rotate(-90)" text-anchor="middle" font-family="{font_family}" font-size="15" font-weight="700" fill="{color_text}">Durchschnittlich belegte Ladepunkte</text>'
     )
     svg.append(
-        '<text x="1156" y="702" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#6b7280">'
+        f'<text x="{width - 88}" y="{height - 62}" text-anchor="end" font-family="{font_family}" font-size="12" fill="{color_muted}">'
         "Quelle: lokales AFIR-Archiv aus Hugging Face loffenauer/AFIR"
         "</text>"
     )
@@ -435,18 +527,35 @@ def html_escape(value: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Create an hourly occupied-EVSE chart from one daily AFIR archive")
-    parser.add_argument("--date", required=True, type=_parse_date, help="Archive/local day in YYYY-MM-DD")
+    parser = argparse.ArgumentParser(description="Create an hourly occupied-EVSE chart from AFIR archives")
+    parser.add_argument(
+        "--date",
+        type=_parse_date,
+        default=None,
+        help="End date in YYYY-MM-DD. Defaults to yesterday in Europe/Berlin.",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_DAYS,
+        help=f"Number of trailing days to average, ending at --date. Defaults to {DEFAULT_DAYS}. Use 1 for one day.",
+    )
     parser.add_argument("--station", default="", help="Internal station id or woladen URL with ?station=<id>")
     parser.add_argument("--query", default="", help="Station search query if --station is not known")
     parser.add_argument("--city", default="", help="Optional exact city filter used with --query")
-    parser.add_argument("--archive", type=Path, default=None, help="Path to live-provider-responses-YYYY-MM-DD.tgz")
+    parser.add_argument("--archive", type=Path, default=None, help="Path to live-provider-responses-YYYY-MM-DD.tgz. Only valid with --days 1.")
+    parser.add_argument("--require-complete", action="store_true", help="Fail if any archive in the requested date window is missing")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Output directory for JSON and SVG")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    end_date = args.date or default_end_date()
+    target_dates = date_window(end_date, args.days)
+    if args.archive is not None and args.days != 1:
+        raise SystemExit("--archive can only be used with --days 1")
+
     config = AppConfig()
     station_catalog_path = config.full_chargers_csv_path or config.chargers_csv_path
     stations = load_station_records(station_catalog_path)
@@ -457,31 +566,68 @@ def main() -> None:
         city=args.city or None,
     )
     identifiers = build_station_identifiers(config, station)
-    archive_path = args.archive or archive_path_for_date(config, args.date)
 
-    events, stats = collect_status_events(
-        archive_path,
-        target_date=args.date,
-        identifiers=identifiers,
-        config=config,
-    )
-    changes = reduce_to_status_changes(events, identifiers.evse_ids)
-    hourly_values = hourly_average_occupied(changes, evse_ids=identifiers.evse_ids, target_date=args.date)
+    daily_results: list[dict[str, Any]] = []
+    missing_archives: list[str] = []
+    for target_date in target_dates:
+        archive_path = args.archive or archive_path_for_date(config, target_date)
+        if not archive_path.exists():
+            missing_archives.append(target_date.isoformat())
+            continue
+        events, stats = collect_status_events(
+            archive_path,
+            target_date=target_date,
+            identifiers=identifiers,
+            config=config,
+        )
+        changes = reduce_to_status_changes(events, identifiers.evse_ids)
+        hourly_values = hourly_average_occupied(changes, evse_ids=identifiers.evse_ids, target_date=target_date)
+        daily_results.append(
+            {
+                "date": target_date.isoformat(),
+                "archive": str(archive_path.resolve()),
+                "archive_stats": stats,
+                "changes": changes,
+                "hourly_values": hourly_values,
+            }
+        )
+
+    if missing_archives and args.require_complete:
+        raise SystemExit(f"Missing archives for requested window: {', '.join(missing_archives)}")
+    if not daily_results:
+        raise SystemExit("No local archives matched the requested window")
+
+    combined_stats = combine_archive_stats([result["archive_stats"] for result in daily_results])
+    hourly_values = average_hourly_values([result["hourly_values"] for result in daily_results])
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    output_stem = f"{_slugify(station.station_id)}-hourly-occupancy-{args.date.isoformat()}"
+    output_stem = (
+        f"{_slugify(station.station_id)}-hourly-occupancy-"
+        f"{target_dates[0].isoformat()}-to-{end_date.isoformat()}"
+    )
     json_path = args.output_dir / f"{output_stem}.json"
     svg_path = args.output_dir / f"{output_stem}.svg"
     write_json_output(
         json_path,
         station=station,
-        target_date=args.date,
+        start_date=target_dates[0],
+        end_date=end_date,
+        requested_days=args.days,
         identifiers=identifiers,
-        stats=stats,
-        changes=changes,
+        stats=combined_stats,
+        daily_results=daily_results,
+        missing_archives=missing_archives,
         hourly_values=hourly_values,
     )
-    write_svg_chart(svg_path, station=station, target_date=args.date, hourly_values=hourly_values)
+    write_svg_chart(
+        svg_path,
+        station=station,
+        start_date=target_dates[0],
+        end_date=end_date,
+        included_days=len(daily_results),
+        requested_days=args.days,
+        hourly_values=hourly_values,
+    )
 
     print(
         json.dumps(
@@ -489,11 +635,14 @@ def main() -> None:
                 "station_id": station.station_id,
                 "operator": station.operator,
                 "address": station.address,
-                "date": args.date.isoformat(),
-                "archive": str(archive_path.resolve()),
+                "start_date": target_dates[0].isoformat(),
+                "end_date": end_date.isoformat(),
+                "requested_days": args.days,
+                "included_days": len(daily_results),
+                "missing_archives": missing_archives,
                 "json": str(json_path.resolve()),
                 "svg": str(svg_path.resolve()),
-                "matching_messages": stats["matching_messages"],
+                "matching_messages": combined_stats["matching_messages"],
                 "hourly_average_occupied": {f"{hour:02d}:00": round(value, 3) for hour, value in enumerate(hourly_values)},
             },
             ensure_ascii=False,
