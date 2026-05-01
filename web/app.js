@@ -28,6 +28,9 @@ const LIST_VIEW_MAX_STATIONS = 20;
 const LIVE_SUMMARY_REFRESH_MS = 15000;
 const LIVE_API_TIMEOUT_MS = 3500;
 const LIVE_DETAIL_TIMEOUT_MS = 4000;
+const OCCUPANCY_HISTORY_FILES = new Map([
+  ["2d6cff515ceed554", "./data/station-occupancy/2d6cff515ceed554.json"],
+]);
 const LIVE_STATION_FIELDS = [
   "availability_status",
   "available_evses",
@@ -582,6 +585,10 @@ const state = {
     detailByStationId: new Map(),
     reachable: false,
   },
+  occupancyHistory: {
+    byStationId: new Map(),
+    pendingStationIds: new Set(),
+  },
   views: {
     map: null, // Leaflet map instance
     detailMap: null, // Mini map in detail view
@@ -644,6 +651,9 @@ const els = {
     liveTitle: document.getElementById("detail-live-title"),
     liveUpdated: document.getElementById("detail-live-updated"),
     liveList: document.getElementById("detail-live-list"),
+    occupancyHistorySection: document.getElementById("detail-occupancy-history-section"),
+    occupancyHistoryRange: document.getElementById("detail-occupancy-history-range"),
+    occupancyHistoryChart: document.getElementById("detail-occupancy-history-chart"),
     favBtn: document.getElementById("btn-toggle-fav"),
     googleBtn: document.getElementById("btn-nav-google"),
     appleBtn: document.getElementById("btn-nav-apple"),
@@ -1460,6 +1470,119 @@ function renderDetailLiveState(feature, liveDetail = null) {
   els.detail.liveSection.hidden = false;
 }
 
+function formatHistoryDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const parsed = new Date(`${raw}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return new Intl.DateTimeFormat("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(parsed);
+}
+
+function formatOccupancyHistoryRange(history) {
+  const start = formatHistoryDate(history?.start_date);
+  const end = formatHistoryDate(history?.end_date);
+  const days = Number(history?.included_days || 0);
+  const dayLabel = days > 0 ? `${days} Tage` : "";
+  if (start && end && start !== end) {
+    return dayLabel ? `${start} - ${end} · ${dayLabel}` : `${start} - ${end}`;
+  }
+  return end || start || dayLabel;
+}
+
+function normalizeOccupancyHistory(history) {
+  const values = history?.hourly_average_occupied;
+  if (!values || typeof values !== "object") return null;
+  const hourly = Array.from({ length: 24 }, (_, hour) => {
+    const key = `${String(hour).padStart(2, "0")}:00`;
+    const value = Number(values[key]);
+    return {
+      hour,
+      key,
+      value: Number.isFinite(value) && value > 0 ? value : 0,
+    };
+  });
+  return { ...history, hourly };
+}
+
+function renderOccupancyHistoryChart(history, feature) {
+  const normalized = normalizeOccupancyHistory(history);
+  if (!normalized) return false;
+  const maxObserved = Math.max(...normalized.hourly.map((item) => item.value), 0);
+  const scale = Math.max(maxObserved, getChargingPointCount(feature.properties), 1);
+  const bars = normalized.hourly.map((item) => {
+    const percent = Math.max(0, Math.min(100, (item.value / scale) * 100));
+    const visiblePercent = item.value > 0 ? Math.max(percent, 3) : 0;
+    const hourLabel = `${String(item.hour).padStart(2, "0")} Uhr`;
+    return `
+      <div class="occupancy-history-hour" title="${escapeHtml(hourLabel)}: ${item.value.toFixed(1)} belegt">
+        <div class="occupancy-history-track" aria-hidden="true">
+          <div class="occupancy-history-bar" style="height: ${visiblePercent.toFixed(1)}%"></div>
+        </div>
+        <span>${String(item.hour).padStart(2, "0")}</span>
+      </div>
+    `;
+  }).join("");
+
+  els.detail.occupancyHistoryRange.textContent = formatOccupancyHistoryRange(normalized);
+  els.detail.occupancyHistoryChart.innerHTML = `
+    <div class="occupancy-history-bars" role="img" aria-label="Typische Auslastung nach Uhrzeit">
+      ${bars}
+    </div>
+  `;
+  els.detail.occupancyHistorySection.hidden = false;
+  return true;
+}
+
+function renderDetailOccupancyHistory(feature) {
+  const stationId = getStationIdFromProps(feature.properties);
+  els.detail.occupancyHistorySection.hidden = true;
+  els.detail.occupancyHistoryRange.textContent = "";
+  els.detail.occupancyHistoryChart.innerHTML = "";
+
+  if (!OCCUPANCY_HISTORY_FILES.has(stationId)) {
+    return;
+  }
+
+  const cached = state.occupancyHistory.byStationId.get(stationId);
+  if (cached) {
+    renderOccupancyHistoryChart(cached, feature);
+    return;
+  }
+
+  if (state.occupancyHistory.pendingStationIds.has(stationId)) {
+    return;
+  }
+
+  state.occupancyHistory.pendingStationIds.add(stationId);
+  const historyUrl = new URL(OCCUPANCY_HISTORY_FILES.get(stationId), import.meta.url);
+  fetch(historyUrl)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`Unexpected occupancy history response ${response.status}`);
+      }
+      return response.json();
+    })
+    .then((history) => {
+      state.occupancyHistory.byStationId.set(stationId, history);
+      const currentStationId = currentDetailFeature
+        ? getStationIdFromProps(currentDetailFeature.properties)
+        : "";
+      if (currentStationId === stationId) {
+        renderOccupancyHistoryChart(history, currentDetailFeature);
+      }
+    })
+    .catch((err) => {
+      console.error(`Failed to load occupancy history for station ${stationId}`, err);
+    })
+    .finally(() => {
+      state.occupancyHistory.pendingStationIds.delete(stationId);
+    });
+}
+
 function populateDetailContent(feature, liveDetail = null) {
   const p = feature.properties;
   const powerDisplay = `${Math.round(getDisplayedMaxPowerKw(p))} kW max / ${getChargingPointCount(p)} Ladepunkte`;
@@ -1497,6 +1620,7 @@ function populateDetailContent(feature, liveDetail = null) {
   renderDetailAmenities(p);
   renderDetailStaticInfo(p);
   renderDetailLiveState(feature, liveDetail);
+  renderDetailOccupancyHistory(feature);
 
   if (occupancySource) {
     els.detail.occupancySource.textContent = occupancySource;
