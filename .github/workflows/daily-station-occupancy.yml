@@ -226,6 +226,13 @@ jobs:
           cp "$OUTPUT_DIR/$OUTPUT_STEM.json" "$OUTPUT_DIR/$LATEST_STEM.json"
           cp "$OUTPUT_DIR/$OUTPUT_STEM.svg" "$OUTPUT_DIR/$LATEST_STEM.svg"
 
+      - name: Publish web occupancy data
+        if: steps.berlin_gate.outputs.should_run == 'true'
+        run: |
+          python scripts/publish_station_occupancy_web.py \
+            --station "$STATION_ID" \
+            --input "$OUTPUT_DIR/$LATEST_STEM.json"
+
       - name: Configure git
         if: steps.berlin_gate.outputs.should_run == 'true'
         run: |
@@ -236,6 +243,7 @@ jobs:
         if: steps.berlin_gate.outputs.should_run == 'true'
         run: |
           git add "$OUTPUT_DIR"
+          git add web/data/station-occupancy site/data/station-occupancy
           if git diff --cached --quiet; then
             echo "No station occupancy chart changes"
             exit 0
