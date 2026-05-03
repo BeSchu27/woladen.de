@@ -17,6 +17,13 @@ import {
   normalizeLiveApiBaseUrl,
   resolveLiveApiBaseUrl as computeLiveApiBaseUrl,
 } from "./live-api.mjs";
+import {
+  formatRatingValue,
+  getUserRating,
+  normalizeRating,
+  parseStoredRatings,
+  serializeStoredRatings,
+} from "./rating.mjs";
 
 /**
  * woladen.de - Modern Frontend Logic
@@ -25,6 +32,7 @@ import {
 /* --- CONFIGURATION & CONSTANTS --- */
 const MAX_DISPLAY_POWER_KW = 400;
 const DEFAULT_MIN_POWER_KW = 50;
+const RATINGS_STORAGE_KEY = "woladen_ratings_v1";
 const LIST_VIEW_MAX_STATIONS = 20;
 const LIVE_SUMMARY_REFRESH_MS = 15000;
 const LIVE_API_TIMEOUT_MS = 3500;
@@ -565,6 +573,7 @@ const state = {
   features: [], // All charger features
   filtered: [], // Currently filtered features
   favorites: new Set(), // Set of station_ids
+  ratings: new Map(), // station_id -> 1-5 rating stored locally
   userPos: null, // { lat, lon }
   startupLocationRequested: false,
   location: {
@@ -648,6 +657,9 @@ const els = {
     price: document.getElementById("detail-price"),
     hoursChip: document.getElementById("detail-hours-chip"),
     hours: document.getElementById("detail-hours"),
+    ratingBadge: document.getElementById("detail-rating-badge"),
+    ratingStatus: document.getElementById("detail-rating-status"),
+    ratingStars: document.getElementById("detail-rating-stars"),
     amenityTitle: document.getElementById("detail-amenities-title"),
     amenityList: document.getElementById("detail-amenities-list"),
     detailsSection: document.getElementById("detail-details-section"),
@@ -679,6 +691,7 @@ const VIEW_IDS = new Set(["view-list", "view-map", "view-favorites", "view-info"
 /* --- INITIALIZATION --- */
 async function init() {
   loadFavorites();
+  loadRatings();
   initMap();
   initNavigation();
   syncViewWithRequestedHash();
@@ -704,6 +717,7 @@ async function init() {
   });
 
   els.detail.favBtn.addEventListener("click", toggleDetailFavorite);
+  els.detail.ratingStars.addEventListener("click", handleRatingClick);
 
   // Load Data
   await loadData();
@@ -1323,6 +1337,30 @@ function updateFilterLabel() {
     filterCount > 0 ? `Filter (${filterCount})` : "Alle Filter";
 }
 
+function getRatingForProps(props) {
+  return getUserRating(state.ratings, getStationIdFromProps(props));
+}
+
+function renderRatingBadge(rating) {
+  const value = formatRatingValue(rating);
+  if (!value) {
+    return "";
+  }
+  return `<span class="rating-badge" title="Lokale Bewertung"><span aria-hidden="true">★</span>${escapeHtml(value)}</span>`;
+}
+
+function updateRatingDependentViews() {
+  if (els.views.list.classList.contains("active")) {
+    renderList();
+  }
+  if (els.views.favorites.classList.contains("active")) {
+    renderFavorites();
+  }
+  if (currentDetailFeature && !els.modals.detail.classList.contains("hidden")) {
+    updateDetailRating(currentDetailFeature.properties);
+  }
+}
+
 function applyFilters() {
   state.filtered = state.features.filter((feature) =>
     matchesFeatureFilters(feature, state.filters, { getDisplayedMaxPowerKw }),
@@ -1444,6 +1482,7 @@ function createStationCard(feature) {
   const amenityLine = amenityBadges
     ? `<div class="card-badge-line card-badge-line-amenities">${amenityBadges}</div>`
     : "";
+  const ratingBadge = renderRatingBadge(getRatingForProps(p));
 
   const markerColor = getMarkerColor(p);
   
@@ -1452,12 +1491,13 @@ function createStationCard(feature) {
       <div class="card-title-row">
         <span class="amenity-dot" style="background-color: ${markerColor}"></span>
         <h3 class="card-title">${escapeHtml(p.operator || "Unbekannt")}</h3>
+        ${ratingBadge}
       </div>
       ${distance ? `<span class="card-distance">${distance}</span>` : ""}
     </div>
     <div class="card-meta">
       ${escapeHtml(p.city || "")}<br>
-      ${Math.round(getDisplayedMaxPowerKw(p))} kW max • ${getChargingPointCount(p)} Ladepunkte • ${formatAmenityCount(p.amenities_total)}
+      ${Math.round(getDisplayedMaxPowerKw(p))} kW max • ${formatChargingPointCount(p)} • ${formatAmenityCount(p.amenities_total)}
     </div>
     <div class="card-badges">
       ${dynamicLine}${amenityLine}
@@ -1486,6 +1526,11 @@ function getChargingPointCount(props) {
     return Math.round(count);
   }
   return 1;
+}
+
+function formatChargingPointCount(props) {
+  const count = getChargingPointCount(props);
+  return `${count} ${count === 1 ? "Ladepunkt" : "Ladepunkte"}`;
 }
 
 /* --- DETAIL MODAL --- */
@@ -1687,9 +1732,31 @@ function renderDetailOccupancyHistory(feature) {
     });
 }
 
+function updateDetailRating(props) {
+  const rating = getRatingForProps(props);
+  const ratingValue = formatRatingValue(rating);
+
+  if (ratingValue) {
+    els.detail.ratingBadge.innerHTML = `<span aria-hidden="true">★</span>${escapeHtml(ratingValue)}`;
+    els.detail.ratingBadge.hidden = false;
+    els.detail.ratingStatus.textContent = `Deine Bewertung: ${rating} von 5`;
+  } else {
+    els.detail.ratingBadge.textContent = "";
+    els.detail.ratingBadge.hidden = true;
+    els.detail.ratingStatus.textContent = "Noch nicht bewertet";
+  }
+
+  els.detail.ratingStars.querySelectorAll(".rating-star-btn").forEach((button) => {
+    const buttonRating = normalizeRating(button.dataset.rating);
+    const isActive = rating > 0 && buttonRating <= rating;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-checked", buttonRating === rating ? "true" : "false");
+  });
+}
+
 function populateDetailContent(feature, liveDetail = null) {
   const p = feature.properties;
-  const powerDisplay = `${Math.round(getDisplayedMaxPowerKw(p))} kW max / ${getChargingPointCount(p)} Ladepunkte`;
+  const powerDisplay = `${Math.round(getDisplayedMaxPowerKw(p))} kW max / ${formatChargingPointCount(p)}`;
 
   els.detail.title.textContent = p.operator || "Unbekannt";
   els.detail.address.textContent = `${p.address || ""}, ${p.postcode || ""} ${p.city || ""}`;
@@ -1721,6 +1788,7 @@ function populateDetailContent(feature, liveDetail = null) {
   els.detail.hours.textContent = openingHoursDisplay;
   els.detail.amenityTitle.textContent = formatAmenityCount(p.amenities_total);
 
+  updateDetailRating(p);
   renderDetailAmenities(p);
   renderDetailStaticInfo(p);
   renderDetailLiveState(feature, liveDetail);
@@ -1973,6 +2041,22 @@ function updateFavBtnState() {
   }
 }
 
+function handleRatingClick(event) {
+  const button = event.target.closest(".rating-star-btn");
+  if (!button || !currentDetailFeature) {
+    return;
+  }
+  const rating = normalizeRating(button.dataset.rating);
+  const stationId = getStationIdFromProps(currentDetailFeature.properties);
+  if (!stationId || rating <= 0) {
+    return;
+  }
+
+  state.ratings.set(stationId, rating);
+  saveRatings();
+  updateRatingDependentViews();
+}
+
 /* --- UTILS --- */
 function escapeHtml(str) {
   if (!str) return "";
@@ -2221,6 +2305,23 @@ function loadFavorites() {
     }
   } catch (e) {
     console.error("Error loading favorites", e);
+  }
+}
+
+function loadRatings() {
+  try {
+    state.ratings = parseStoredRatings(localStorage.getItem(RATINGS_STORAGE_KEY));
+  } catch (e) {
+    console.error("Error loading ratings", e);
+    state.ratings = new Map();
+  }
+}
+
+function saveRatings() {
+  try {
+    localStorage.setItem(RATINGS_STORAGE_KEY, serializeStoredRatings(state.ratings));
+  } catch (e) {
+    console.error("Error saving ratings", e);
   }
 }
 
