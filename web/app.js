@@ -24,6 +24,7 @@ import {
 
 /* --- CONFIGURATION & CONSTANTS --- */
 const MAX_DISPLAY_POWER_KW = 400;
+const DEFAULT_MIN_POWER_KW = 50;
 const LIST_VIEW_MAX_STATIONS = 20;
 const LIVE_SUMMARY_REFRESH_MS = 15000;
 const LIVE_API_TIMEOUT_MS = 3500;
@@ -573,7 +574,7 @@ const state = {
   },
   filters: {
     operator: "",
-    minPower: 50,
+    minPower: DEFAULT_MIN_POWER_KW,
     amenities: new Set(),
     amenityNameQuery: "",
   },
@@ -588,6 +589,11 @@ const state = {
   occupancyHistory: {
     byStationId: new Map(),
     pendingStationIds: new Set(),
+  },
+  under50: {
+    loaded: false,
+    loadingPromise: null,
+    error: null,
   },
   views: {
     map: null, // Leaflet map instance
@@ -706,25 +712,25 @@ async function init() {
 /* --- DATA LOADING --- */
 async function loadData() {
   try {
-    const [geoRes, opRes, summaryRes] = await Promise.all([
+    const [fastGeoRes, summaryRes] = await Promise.all([
       fetch("./data/chargers_fast.geojson"),
-      fetch("./data/operators.json"),
       fetch("./data/summary.json"),
     ]);
 
-    if (!geoRes.ok || !opRes.ok || !summaryRes.ok) throw new Error("Network response was not ok");
+    if (!fastGeoRes.ok || !summaryRes.ok) throw new Error("Network response was not ok");
 
-    const geoData = await geoRes.json();
-    const opData = await opRes.json();
+    const fastGeoData = await fastGeoRes.json();
     const summaryData = await summaryRes.json();
 
-    state.features = geoData.features || [];
+    state.features = (fastGeoData.features || []).map((feature) =>
+      prepareChargerFeature(feature, "fast"),
+    );
 
     // Sort features initially just to have a defined order, strictly standard
     // Real sorting happens when we have location
 
-    populateOperators(opData);
-    setAppMeta(geoData, summaryData);
+    populateOperators();
+    setAppMeta(fastGeoData, summaryData);
     renderAmenityFilters(); // Render dynamic amenity filters
     await syncLocationPermissionState();
 
@@ -737,6 +743,53 @@ async function loadData() {
   } catch (err) {
     console.error("Failed to load data", err);
     els.lists.chargers.innerHTML = `<div class="empty-state">Fehler beim Laden der Daten.<br>${err.message}</div>`;
+  }
+}
+
+function prepareChargerFeature(feature, powerClass) {
+  const prepared = feature || {};
+  prepared.properties = {
+    ...(prepared.properties || {}),
+    charger_power_class: powerClass,
+  };
+  return prepared;
+}
+
+function shouldIncludeUnder50Features() {
+  return Number(state.filters.minPower ?? DEFAULT_MIN_POWER_KW) < DEFAULT_MIN_POWER_KW;
+}
+
+async function ensureUnder50FeaturesLoaded() {
+  if (state.under50.loaded) {
+    return;
+  }
+  if (state.under50.loadingPromise) {
+    return state.under50.loadingPromise;
+  }
+
+  state.under50.error = null;
+  state.under50.loadingPromise = (async () => {
+    const response = await fetch("./data/chargers_under_50.geojson");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const geoData = await response.json();
+    const under50Features = (geoData.features || []).map((feature) =>
+      prepareChargerFeature(feature, "normal"),
+    );
+    state.features.push(...under50Features);
+    state.under50.loaded = true;
+    populateOperators();
+    renderAmenityFilters();
+  })();
+
+  try {
+    await state.under50.loadingPromise;
+  } catch (err) {
+    state.under50.error = err;
+    console.error("Failed to load under-50 kW charger data", err);
+  } finally {
+    state.under50.loadingPromise = null;
   }
 }
 
@@ -807,7 +860,10 @@ function requestLiveSummariesForFeatures(features) {
   }
 
   const stationIds = Array.from(new Set(
-    features.map((feature) => getStationIdFromProps(feature.properties)).filter(Boolean),
+    features
+      .filter((feature) => shouldRequestLiveDataForProps(feature?.properties))
+      .map((feature) => getStationIdFromProps(feature.properties))
+      .filter(Boolean),
   ));
   if (stationIds.length === 0) {
     return;
@@ -937,6 +993,10 @@ async function loadLiveStationDetail(stationId) {
   if (!state.live.baseUrl || !stationId) {
     return null;
   }
+  const feature = findFeatureByStationId(stationId);
+  if (feature && !shouldRequestLiveDataForProps(feature.properties)) {
+    return null;
+  }
   if (state.live.detailByStationId.has(stationId)) {
     return state.live.detailByStationId.get(stationId);
   }
@@ -954,7 +1014,6 @@ async function loadLiveStationDetail(stationId) {
     }
     state.live.reachable = true;
     state.live.detailByStationId.set(stationId, payload);
-    const feature = findFeatureByStationId(stationId);
     if (feature && payload.station) {
       applyLiveStationSummaryToProps(feature.properties, payload.station);
       state.live.summaryByStationId.set(stationId, payload.station);
@@ -985,22 +1044,39 @@ function setAppMeta(geoData, summaryData) {
       hour: "2-digit",
       minute: "2-digit",
     });
-    els.meta.textContent = `Datenstand: ${date}`;
+    const fastTotal = Number(summaryData?.records?.fast_chargers_total || 0);
+    const under50Total = Number(summaryData?.records?.chargers_under_50_total || 0);
+    const countSuffix = fastTotal && under50Total
+      ? ` · ${fastTotal.toLocaleString("de-DE")} Schnelllader · ${under50Total.toLocaleString("de-DE")} unter 50 kW`
+      : "";
+    els.meta.textContent = `Datenstand: ${date}${countSuffix}`;
   }
 }
 
-function populateOperators(opData) {
-  const operators = opData.operators
-    .filter((o) => o.stations >= 100) // Only major ones
-    .map((o) => o.name)
+function populateOperators() {
+  const selectedOperator = state.filters.operator;
+  const operatorCounts = new Map();
+  state.features.forEach((feature) => {
+    const name = String(feature?.properties?.operator || "").trim();
+    if (!name) return;
+    operatorCounts.set(name, (operatorCounts.get(name) || 0) + 1);
+  });
+
+  const operators = Array.from(operatorCounts.entries())
+    .filter(([, stations]) => stations >= 100) // Only major ones
+    .map(([name]) => name)
     .sort();
 
+  els.filter.operator.querySelectorAll("option:not([value=''])").forEach((option) => {
+    option.remove();
+  });
   operators.forEach((op) => {
     const opt = document.createElement("option");
     opt.value = op;
     opt.textContent = op;
     els.filter.operator.appendChild(opt);
   });
+  els.filter.operator.value = selectedOperator;
 }
 
 /* --- MAP LOGIC --- */
@@ -1224,8 +1300,23 @@ function renderAmenityFilters() {
 }
 
 function updateFilters() {
-  applyFilters();
+  if (shouldIncludeUnder50Features() && !state.under50.loaded) {
+    if (els.views.list.classList.contains("active")) {
+      els.lists.chargers.innerHTML = `<div class="loading-state" data-nosnippet>Lade Normalladepunkte...</div>`;
+    }
+    void ensureUnder50FeaturesLoaded().then(() => {
+      applyFilters();
+      updateFilterLabel();
+    });
+    updateFilterLabel();
+    return;
+  }
 
+  applyFilters();
+  updateFilterLabel();
+}
+
+function updateFilterLabel() {
   const filterCount = countActiveFilters(state.filters);
 
   els.filter.label.textContent =
@@ -1295,6 +1386,15 @@ function renderFavorites() {
       Noch keine Favoriten gespeichert.<br>
       Klicke auf den <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg> Stern in der Detailansicht um Stationen zu merken.
     </div>`;
+    return;
+  }
+
+  const hasMissingFavorite = Array.from(state.favorites).some((stationId) =>
+    !findFeatureByStationId(stationId),
+  );
+  if (hasMissingFavorite && !state.under50.loaded && !state.under50.error) {
+    container.innerHTML = `<div class="loading-state" data-nosnippet>Lade Favoriten...</div>`;
+    void ensureUnder50FeaturesLoaded().then(renderFavorites);
     return;
   }
 
@@ -1374,6 +1474,10 @@ function getDisplayedMaxPowerKw(props) {
     return maxIndividual;
   }
   return sanitizeDisplayedPowerKw(props.max_power_kw);
+}
+
+function shouldRequestLiveDataForProps(props) {
+  return getDisplayedMaxPowerKw(props) >= DEFAULT_MIN_POWER_KW;
 }
 
 function getChargingPointCount(props) {
@@ -1929,6 +2033,10 @@ function syncDetailModalWithUrl() {
 
   const feature = findFeatureByStationId(stationId);
   if (!feature) {
+    if (!state.under50.loaded && !state.under50.error) {
+      void ensureUnder50FeaturesLoaded().then(syncDetailModalWithUrl);
+      return;
+    }
     console.warn("Unknown station requested", stationId);
     return;
   }
