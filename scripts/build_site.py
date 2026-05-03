@@ -28,6 +28,7 @@ REQUIRED_DATA = [
     "chargers_fast.geojson",
     "chargers_under_50.geojson",
     "operators.json",
+    "station_ratings.json",
     "summary.json",
 ]
 

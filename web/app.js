@@ -18,8 +18,10 @@ import {
   resolveLiveApiBaseUrl as computeLiveApiBaseUrl,
 } from "./live-api.mjs";
 import {
+  formatRatingCount,
   formatRatingValue,
   getUserRating,
+  normalizeRatingSummary,
   normalizeRating,
   parseStoredRatings,
   serializeStoredRatings,
@@ -33,6 +35,9 @@ import {
 const MAX_DISPLAY_POWER_KW = 400;
 const DEFAULT_MIN_POWER_KW = 50;
 const RATINGS_STORAGE_KEY = "woladen_ratings_v1";
+const RATING_CLIENT_STORAGE_KEY = "woladen_rating_client_v1";
+const RATING_SUMMARY_REFRESH_MS = 60000;
+const RATING_API_TIMEOUT_MS = 3500;
 const LIST_VIEW_MAX_STATIONS = 20;
 const LIVE_SUMMARY_REFRESH_MS = 15000;
 const LIVE_API_TIMEOUT_MS = 3500;
@@ -574,6 +579,12 @@ const state = {
   filtered: [], // Currently filtered features
   favorites: new Set(), // Set of station_ids
   ratings: new Map(), // station_id -> 1-5 rating stored locally
+  ratingClientId: "",
+  ratingSummariesByStationId: new Map(),
+  ratingSummaryFetchedAtByStationId: new Map(),
+  pendingRatingSummaryStationIds: new Set(),
+  pendingRatingSubmissions: new Set(),
+  ratingSubmissionErrors: new Map(),
   userPos: null, // { lat, lon }
   startupLocationRequested: false,
   location: {
@@ -746,6 +757,7 @@ async function loadData() {
     populateOperators();
     setAppMeta(fastGeoData, summaryData);
     renderAmenityFilters(); // Render dynamic amenity filters
+    await loadStaticRatingSummaries();
     await syncLocationPermissionState();
 
     applyFilters(); // Initial render
@@ -757,6 +769,20 @@ async function loadData() {
   } catch (err) {
     console.error("Failed to load data", err);
     els.lists.chargers.innerHTML = `<div class="empty-state">Fehler beim Laden der Daten.<br>${err.message}</div>`;
+  }
+}
+
+async function loadStaticRatingSummaries() {
+  try {
+    const response = await fetch("./data/station_ratings.json");
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    const ratings = Array.isArray(payload?.ratings) ? payload.ratings : [];
+    upsertRatingSummaries(ratings);
+  } catch (err) {
+    console.warn("Failed to load static station ratings", err);
   }
 }
 
@@ -924,6 +950,87 @@ function requestLiveSummariesForFeatures(features) {
     } finally {
       pendingIds.forEach((stationId) => {
         state.live.pendingSummaryStationIds.delete(stationId);
+      });
+    }
+  })();
+}
+
+function upsertRatingSummaries(summaries, missingStationIds = []) {
+  summaries.forEach((summary) => {
+    const normalized = normalizeRatingSummary(summary);
+    if (!normalized) {
+      return;
+    }
+    const stationId = normalized.station_id;
+    state.ratingSummariesByStationId.set(stationId, normalized);
+    state.ratingSummaryFetchedAtByStationId.set(stationId, Date.now());
+  });
+
+  missingStationIds.forEach((stationId) => {
+    const id = String(stationId || "").trim();
+    if (!id) {
+      return;
+    }
+    state.ratingSummariesByStationId.delete(id);
+    state.ratingSummaryFetchedAtByStationId.set(id, Date.now());
+  });
+}
+
+function requestRatingSummariesForFeatures(features) {
+  if (!state.live.baseUrl) {
+    return;
+  }
+
+  const stationIds = Array.from(new Set(
+    features
+      .map((feature) => getStationIdFromProps(feature?.properties))
+      .filter(Boolean),
+  ));
+  if (stationIds.length === 0) {
+    return;
+  }
+
+  const now = Date.now();
+  const pendingIds = stationIds.filter((stationId) => {
+    if (state.pendingRatingSummaryStationIds.has(stationId)) {
+      return false;
+    }
+    const fetchedAt = state.ratingSummaryFetchedAtByStationId.get(stationId) || 0;
+    return !fetchedAt || now - fetchedAt >= RATING_SUMMARY_REFRESH_MS;
+  });
+
+  if (pendingIds.length === 0) {
+    return;
+  }
+
+  pendingIds.forEach((stationId) => {
+    state.pendingRatingSummaryStationIds.add(stationId);
+  });
+
+  void (async () => {
+    try {
+      const payload = await fetchJsonWithTimeout(
+        buildLiveApiUrl("/v1/ratings/lookup"),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ station_ids: pendingIds }),
+        },
+        RATING_API_TIMEOUT_MS,
+      );
+      if (!payload || typeof payload !== "object" || !Array.isArray(payload.ratings)) {
+        throw new Error("Unexpected rating lookup payload");
+      }
+      state.live.reachable = true;
+      upsertRatingSummaries(payload.ratings, payload.missing_station_ids || []);
+      refreshRenderedViews();
+    } catch (err) {
+      console.error("Failed to load station ratings", err);
+    } finally {
+      pendingIds.forEach((stationId) => {
+        state.pendingRatingSummaryStationIds.delete(stationId);
       });
     }
   })();
@@ -1341,12 +1448,46 @@ function getRatingForProps(props) {
   return getUserRating(state.ratings, getStationIdFromProps(props));
 }
 
-function renderRatingBadge(rating) {
-  const value = formatRatingValue(rating);
+function getRatingSummaryForProps(props) {
+  const stationId = getStationIdFromProps(props);
+  if (!stationId) {
+    return null;
+  }
+  return state.ratingSummariesByStationId.get(stationId) || null;
+}
+
+function getRatingDisplayForProps(props) {
+  const summary = getRatingSummaryForProps(props);
+  if (summary) {
+    return {
+      value: summary.average_rating,
+      title: `Durchschnitt aus ${formatRatingCount(summary.rating_count)}`,
+      count: summary.rating_count,
+      localOnly: false,
+    };
+  }
+
+  const userRating = getRatingForProps(props);
+  if (userRating > 0) {
+    return {
+      value: userRating,
+      title: "Deine lokale Bewertung",
+      count: 0,
+      localOnly: true,
+    };
+  }
+  return null;
+}
+
+function renderRatingBadge(displayRating) {
+  if (!displayRating) {
+    return "";
+  }
+  const value = formatRatingValue(displayRating.value);
   if (!value) {
     return "";
   }
-  return `<span class="rating-badge" title="Lokale Bewertung"><span aria-hidden="true">★</span>${escapeHtml(value)}</span>`;
+  return `<span class="rating-badge" title="${escapeHtml(displayRating.title)}"><span aria-hidden="true">★</span>${escapeHtml(value)}</span>`;
 }
 
 function updateRatingDependentViews() {
@@ -1404,6 +1545,7 @@ function renderList() {
     container.appendChild(card);
   });
   requestLiveSummariesForFeatures(displayItems);
+  requestRatingSummariesForFeatures(displayItems);
 
   if (state.filtered.length > LIST_VIEW_MAX_STATIONS) {
     const more = document.createElement("div");
@@ -1450,6 +1592,7 @@ function renderFavorites() {
     container.appendChild(card);
   });
   requestLiveSummariesForFeatures(favFeatures);
+  requestRatingSummariesForFeatures(favFeatures);
 }
 
 function createStationCard(feature) {
@@ -1482,7 +1625,7 @@ function createStationCard(feature) {
   const amenityLine = amenityBadges
     ? `<div class="card-badge-line card-badge-line-amenities">${amenityBadges}</div>`
     : "";
-  const ratingBadge = renderRatingBadge(getRatingForProps(p));
+  const ratingBadge = renderRatingBadge(getRatingDisplayForProps(p));
 
   const markerColor = getMarkerColor(p);
   
@@ -1733,16 +1876,40 @@ function renderDetailOccupancyHistory(feature) {
 }
 
 function updateDetailRating(props) {
+  const stationId = getStationIdFromProps(props);
   const rating = getRatingForProps(props);
-  const ratingValue = formatRatingValue(rating);
+  const summary = getRatingSummaryForProps(props);
+  const displayRating = getRatingDisplayForProps(props);
+  const ratingValue = formatRatingValue(displayRating?.value);
 
   if (ratingValue) {
     els.detail.ratingBadge.innerHTML = `<span aria-hidden="true">★</span>${escapeHtml(ratingValue)}`;
     els.detail.ratingBadge.hidden = false;
-    els.detail.ratingStatus.textContent = `Deine Bewertung: ${rating} von 5`;
   } else {
     els.detail.ratingBadge.textContent = "";
     els.detail.ratingBadge.hidden = true;
+  }
+
+  const summaryText = summary
+    ? `Ø ${formatRatingValue(summary.average_rating)} aus ${formatRatingCount(summary.rating_count)}`
+    : "";
+  const userText = rating > 0 ? `Deine Bewertung: ${rating} von 5` : "";
+  const isSubmitting = stationId && state.pendingRatingSubmissions.has(stationId);
+  const submissionError = stationId ? state.ratingSubmissionErrors.get(stationId) : "";
+
+  if (isSubmitting) {
+    els.detail.ratingStatus.textContent = "Speichere Bewertung...";
+  } else if (submissionError) {
+    els.detail.ratingStatus.textContent = "Bewertung lokal gespeichert. Server gerade nicht erreichbar.";
+  } else if (userText && summaryText) {
+    els.detail.ratingStatus.textContent = `${userText} · ${summaryText}`;
+  } else if (userText) {
+    els.detail.ratingStatus.textContent = state.live.baseUrl
+      ? userText
+      : `${userText} · nur auf diesem Gerät`;
+  } else if (summaryText) {
+    els.detail.ratingStatus.textContent = summaryText;
+  } else {
     els.detail.ratingStatus.textContent = "Noch nicht bewertet";
   }
 
@@ -1751,6 +1918,7 @@ function updateDetailRating(props) {
     const isActive = rating > 0 && buttonRating <= rating;
     button.classList.toggle("active", isActive);
     button.setAttribute("aria-checked", buttonRating === rating ? "true" : "false");
+    button.disabled = Boolean(isSubmitting);
   });
 }
 
@@ -1887,6 +2055,7 @@ function openDetail(feature, options = {}) {
   const stationId = getStationIdFromProps(p);
   if (stationId) {
     void loadLiveStationDetail(stationId);
+    requestRatingSummariesForFeatures([feature]);
   }
 }
 
@@ -2041,7 +2210,7 @@ function updateFavBtnState() {
   }
 }
 
-function handleRatingClick(event) {
+async function handleRatingClick(event) {
   const button = event.target.closest(".rating-star-btn");
   if (!button || !currentDetailFeature) {
     return;
@@ -2053,8 +2222,46 @@ function handleRatingClick(event) {
   }
 
   state.ratings.set(stationId, rating);
+  state.ratingSubmissionErrors.delete(stationId);
   saveRatings();
   updateRatingDependentViews();
+
+  if (!state.live.baseUrl) {
+    return;
+  }
+
+  state.pendingRatingSubmissions.add(stationId);
+  updateRatingDependentViews();
+
+  try {
+    const payload = await fetchJsonWithTimeout(
+      buildLiveApiUrl("/v1/ratings"),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          station_id: stationId,
+          rating,
+          client_id: getOrCreateRatingClientId(),
+        }),
+      },
+      RATING_API_TIMEOUT_MS,
+    );
+    const summary = normalizeRatingSummary(payload?.rating);
+    if (!summary) {
+      throw new Error("Unexpected rating submission payload");
+    }
+    state.live.reachable = true;
+    upsertRatingSummaries([summary]);
+  } catch (err) {
+    state.ratingSubmissionErrors.set(stationId, String(err?.message || err || "Fehler"));
+    console.error(`Failed to submit rating for station ${stationId}`, err);
+  } finally {
+    state.pendingRatingSubmissions.delete(stationId);
+    updateRatingDependentViews();
+  }
 }
 
 /* --- UTILS --- */
@@ -2315,6 +2522,44 @@ function loadRatings() {
     console.error("Error loading ratings", e);
     state.ratings = new Map();
   }
+}
+
+function createRatingClientId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 18)}`;
+}
+
+function getOrCreateRatingClientId() {
+  const current = String(state.ratingClientId || "").trim();
+  if (current.length >= 16) {
+    return current;
+  }
+
+  try {
+    const stored = String(localStorage.getItem(RATING_CLIENT_STORAGE_KEY) || "").trim();
+    if (stored.length >= 16) {
+      state.ratingClientId = stored;
+      return stored;
+    }
+  } catch (e) {
+    console.error("Error loading rating client id", e);
+  }
+
+  const created = createRatingClientId();
+  state.ratingClientId = created;
+  try {
+    localStorage.setItem(RATING_CLIENT_STORAGE_KEY, created);
+  } catch (e) {
+    console.error("Error saving rating client id", e);
+  }
+  return created;
 }
 
 function saveRatings() {

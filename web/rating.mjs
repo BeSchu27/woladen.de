@@ -52,9 +52,41 @@ export function getUserRating(ratings, stationId) {
 }
 
 export function formatRatingValue(rating) {
-  const normalized = normalizeRating(rating);
-  if (!normalized) {
+  const numeric = Number(rating);
+  if (!Number.isFinite(numeric) || numeric < 1 || numeric > 5) {
     return "";
   }
-  return normalized.toFixed(1).replace(".", ",");
+  return numeric.toFixed(1).replace(".", ",");
+}
+
+export function normalizeRatingSummary(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const stationId = String(value.station_id || "").trim();
+  const averageRating = Number(value.average_rating);
+  const ratingCount = Math.round(Number(value.rating_count || 0));
+  if (
+    !stationId ||
+    !Number.isFinite(averageRating) ||
+    averageRating < 1 ||
+    averageRating > 5 ||
+    !Number.isFinite(ratingCount) ||
+    ratingCount <= 0
+  ) {
+    return null;
+  }
+  return {
+    station_id: stationId,
+    average_rating: averageRating,
+    rating_count: ratingCount,
+  };
+}
+
+export function formatRatingCount(count) {
+  const numeric = Math.round(Number(count || 0));
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return "";
+  }
+  return `${numeric} ${numeric === 1 ? "Bewertung" : "Bewertungen"}`;
 }
